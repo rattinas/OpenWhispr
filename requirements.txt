@@ -1,0 +1,8 @@
+mlx-whisper>=0.4
+sounddevice>=0.5
+numpy>=1.26
+pynput>=1.8
+rumps>=0.4
+ollama>=0.4
+soundfile>=0.12
+pyobjc-framework-Cocoa>=10.0
