@@ -8,3 +8,10 @@ __pycache__/
 *.dmg
 *.app
 .DS_Store
+TalkIsCheap/.build/
+TalkIsCheap/dist/
+_python_prototype/venv/
+*.pyc
+node_modules/
+.next/
+.env.local
