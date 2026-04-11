@@ -16,6 +16,20 @@ namespace TalkIsCheap.Services
         // Record at 16kHz mono 16-bit PCM (ideal for Whisper)
         private readonly WaveFormat _format = new(16000, 16, 1);
 
+        /// <summary>
+        /// Returns a list of available recording devices (index, name).
+        /// </summary>
+        public static List<(int Index, string Name)> GetDevices()
+        {
+            var devices = new List<(int, string)>();
+            for (int i = 0; i < WaveInEvent.DeviceCount; i++)
+            {
+                var caps = WaveInEvent.GetCapabilities(i);
+                devices.Add((i, caps.ProductName));
+            }
+            return devices;
+        }
+
         public void Start()
         {
             if (IsRecording) return;
@@ -23,8 +37,10 @@ namespace TalkIsCheap.Services
             _memoryStream = new MemoryStream();
             _writer = new WaveFileWriter(_memoryStream, _format);
 
+            var deviceIndex = Models.AppSettings.Shared.MicrophoneDevice;
             _waveIn = new WaveInEvent
             {
+                DeviceNumber = deviceIndex,
                 WaveFormat = _format,
                 BufferMilliseconds = 100
             };

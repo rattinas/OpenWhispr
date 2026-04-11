@@ -74,6 +74,27 @@ namespace TalkIsCheap.Views
 
             // Hotkey
             HotkeyDisplay.Text = _settings.HotkeyShort;
+
+            // Microphone
+            MicrophoneCombo.Items.Clear();
+            var devices = AudioRecorder.GetDevices();
+            if (devices.Count == 0)
+            {
+                MicrophoneCombo.Items.Add(new ComboBoxItem { Content = "No microphone found", IsEnabled = false });
+            }
+            else
+            {
+                foreach (var (index, name) in devices)
+                {
+                    var item = new ComboBoxItem { Content = name, Tag = index };
+                    MicrophoneCombo.Items.Add(item);
+                    if (index == _settings.MicrophoneDevice)
+                        MicrophoneCombo.SelectedItem = item;
+                }
+                // If no selection yet, pick first
+                if (MicrophoneCombo.SelectedItem == null && MicrophoneCombo.Items.Count > 0)
+                    MicrophoneCombo.SelectedIndex = 0;
+            }
         }
 
         private void RefreshLicenseUI()
@@ -209,6 +230,17 @@ namespace TalkIsCheap.Views
             _settings.Save();
         }
 
+        private void Microphone_Changed(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isLoading) return;
+            if (MicrophoneCombo.SelectedItem is ComboBoxItem item && item.Tag is int deviceIndex)
+            {
+                _settings.MicrophoneDevice = deviceIndex;
+                _settings.Save();
+                Logger.Write($"Microphone changed to device {deviceIndex}");
+            }
+        }
+
         private void ChangeHotkey_Click(object sender, RoutedEventArgs e)
         {
             if (_isCapturingHotkey) return;
@@ -221,30 +253,33 @@ namespace TalkIsCheap.Views
         {
             if (!_isCapturingHotkey) return;
 
-            int vkCode;
-            string name;
+            var key = e.Key == Key.System ? e.SystemKey : e.Key;
+            int vkCode = KeyInterop.VirtualKeyFromKey(key);
+            string name = key.ToString();
 
-            switch (e.Key)
+            // Map common keys to friendly names
+            switch (key)
             {
                 case Key.LeftCtrl:
                 case Key.RightCtrl:
                     vkCode = 163; // Right Ctrl
-                    name = "Ctrl";
+                    name = "Right Ctrl";
                     break;
-                case Key.F5:
-                    vkCode = 116;
-                    name = "F5";
+                case Key.LeftAlt:
+                case Key.RightAlt:
+                    vkCode = KeyInterop.VirtualKeyFromKey(key);
+                    name = "Alt";
                     break;
-                case Key.F6:
-                    vkCode = 117;
-                    name = "F6";
+                case Key.CapsLock:
+                    name = "CapsLock";
                     break;
-                case Key.F8:
-                    vkCode = 119;
-                    name = "F8";
-                    break;
-                default:
-                    return; // ignore unsupported keys
+                case Key.Escape:
+                    // Cancel capture
+                    _isCapturingHotkey = false;
+                    ChangeHotkeyBtn.Content = "Change";
+                    PreviewKeyDown -= CaptureHotkey;
+                    e.Handled = true;
+                    return;
             }
 
             _settings.HotkeyCode = vkCode;
@@ -254,6 +289,10 @@ namespace TalkIsCheap.Views
             ChangeHotkeyBtn.Content = "Change";
             PreviewKeyDown -= CaptureHotkey;
             e.Handled = true;
+
+            // Restart hotkey manager with new key
+            HotkeyManager.Shared.Start();
+            Logger.Write($"Hotkey changed to: {name} (vkCode: {vkCode})");
         }
 
         private async void Activate_Click(object sender, RoutedEventArgs e)

@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
+using System.IO;
 using H.NotifyIcon;
 using Microsoft.Win32;
 using TalkIsCheap.Models;
@@ -29,11 +30,25 @@ namespace TalkIsCheap
             Services.Logger.Write("=== STARTUP v2.0 (Windows) ===");
 
             // Create system tray icon
-            _notifyIcon = new TaskbarIcon
-            {
-                ToolTipText = "TalkIsCheap",
-                ContextMenu = BuildContextMenu()
-            };
+            var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "icon.ico");
+            Services.Logger.Write($"Icon path: {iconPath}, exists: {File.Exists(iconPath)}");
+
+            System.Drawing.Icon trayIcon;
+            if (File.Exists(iconPath))
+                trayIcon = new System.Drawing.Icon(iconPath);
+            else
+                trayIcon = System.Drawing.SystemIcons.Application;
+
+            Services.Logger.Write($"Creating TaskbarIcon with icon: {trayIcon.Width}x{trayIcon.Height}");
+
+            _notifyIcon = new TaskbarIcon();
+            _notifyIcon.Icon = trayIcon;
+            _notifyIcon.ToolTipText = "TalkIsCheap";
+            _notifyIcon.ContextMenu = BuildContextMenu();
+            _notifyIcon.Visibility = Visibility.Visible;
+            _notifyIcon.ForceCreate();
+
+            Services.Logger.Write("TaskbarIcon created and visible");
 
             // Set initial icon
             UpdateTrayIcon();
@@ -64,6 +79,9 @@ namespace TalkIsCheap
                     onboarding.Activate();
                 });
             }
+
+            // Always show settings on startup for easy access
+            Dispatcher.BeginInvoke(() => ShowSettings());
 
             Services.Logger.Write("Ready!");
         }

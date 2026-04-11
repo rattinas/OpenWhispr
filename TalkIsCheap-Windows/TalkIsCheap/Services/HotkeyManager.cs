@@ -99,9 +99,15 @@ namespace TalkIsCheap.Services
         private const long DoubleTapWindowTicks = 4000000;  // 0.4s
         private const long HoldThresholdTicks = 3000000;     // 0.3s
 
+        private const int VK_LALT = 0xA4;
+        private const int VK_RALT = 0xA5;
+        private const int VK_CAPSLOCK = 0x14;
+
         private int TargetKeyCode => AppSettings.Shared.HotkeyCode;
-        private bool IsModifierHotkey => TargetKeyCode == VK_LCONTROL || TargetKeyCode == VK_RCONTROL
-            || TargetKeyCode == 162 || TargetKeyCode == 163;
+        private bool IsModifierHotkey => TargetKeyCode is VK_LCONTROL or VK_RCONTROL or 162 or 163
+            or VK_LSHIFT or VK_RSHIFT or 160 or 161
+            or VK_LALT or VK_RALT or 164 or 165
+            or VK_CAPSLOCK;
 
         public bool IsHandsFree => _isHandsFreeMode;
 
@@ -146,8 +152,17 @@ namespace TalkIsCheap.Services
 
                 if (IsModifierHotkey)
                 {
-                    // Handle Ctrl key events
-                    if (vkCode == VK_LCONTROL || vkCode == VK_RCONTROL)
+                    // Handle modifier key events (Ctrl, Shift, Alt, CapsLock)
+                    bool isTargetKey = vkCode switch
+                    {
+                        VK_LCONTROL or VK_RCONTROL => TargetKeyCode is 162 or 163 or VK_LCONTROL or VK_RCONTROL,
+                        VK_LSHIFT or VK_RSHIFT => TargetKeyCode is 160 or 161 or VK_LSHIFT or VK_RSHIFT,
+                        VK_LALT or VK_RALT => TargetKeyCode is 164 or 165 or VK_LALT or VK_RALT,
+                        VK_CAPSLOCK => TargetKeyCode == VK_CAPSLOCK,
+                        _ => false
+                    };
+
+                    if (isTargetKey)
                     {
                         bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
@@ -162,7 +177,7 @@ namespace TalkIsCheap.Services
                     }
                     else if (_controlIsDown && isKeyDown)
                     {
-                        // Another key pressed while Ctrl held
+                        // Another key pressed while hotkey held
                         _otherKeyPressed = true;
                     }
                 }

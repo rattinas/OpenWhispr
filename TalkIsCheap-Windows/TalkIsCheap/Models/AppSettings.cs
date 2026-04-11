@@ -61,6 +61,9 @@ namespace TalkIsCheap.Models
         public bool AppAwareContext { get; set; } = true;
 
         // Audio
+        [JsonProperty("microphoneDevice")]
+        public int MicrophoneDevice { get; set; } = 0;
+
         [JsonProperty("dimAudioWhileRecording")]
         public bool DimAudioWhileRecording { get; set; } = true;
 
@@ -126,10 +129,11 @@ namespace TalkIsCheap.Models
                 return HotkeyCode switch
                 {
                     162 or 163 => "Control",
-                    116 => "F5",
-                    117 => "F6",
-                    119 => "F8",
-                    _ => "Key"
+                    160 or 161 => "Shift",
+                    164 or 165 => "Alt",
+                    20 => "CapsLock",
+                    >= 112 and <= 135 => $"F{HotkeyCode - 111}",
+                    _ => $"Key({HotkeyCode})"
                 };
             }
         }
@@ -142,10 +146,11 @@ namespace TalkIsCheap.Models
                 return HotkeyCode switch
                 {
                     162 or 163 => "Ctrl",
-                    116 => "F5",
-                    117 => "F6",
-                    119 => "F8",
-                    _ => "Key"
+                    160 or 161 => "Shift",
+                    164 or 165 => "Alt",
+                    20 => "CapsLock",
+                    >= 112 and <= 135 => $"F{HotkeyCode - 111}",
+                    _ => $"Key({HotkeyCode})"
                 };
             }
         }

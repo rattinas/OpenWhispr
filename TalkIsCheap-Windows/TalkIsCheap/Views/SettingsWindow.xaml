@@ -38,6 +38,10 @@
                     <TextBlock Style="{StaticResource FieldLabel}" Text="Language"/>
                     <ComboBox x:Name="LanguageCombo" SelectionChanged="Language_Changed"/>
 
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="Microphone"/>
+                    <ComboBox x:Name="MicrophoneCombo" SelectionChanged="Microphone_Changed"/>
+                    <TextBlock Style="{StaticResource HintText}" Text="Select which microphone to use for recording."/>
+
                     <TextBlock Style="{StaticResource SectionHeader}" Text="Text Polishing"/>
                     <TextBlock Style="{StaticResource FieldLabel}" Text="Engine"/>
                     <ComboBox x:Name="PolishProviderCombo" SelectionChanged="PolishProvider_Changed">
