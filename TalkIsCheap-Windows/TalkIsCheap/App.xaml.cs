@@ -6,7 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
-using Hardcodet.NotifyIcon.Wpf;
+using H.NotifyIcon;
 using Microsoft.Win32;
 using TalkIsCheap.Models;
 using TalkIsCheap.Services;
@@ -32,8 +32,7 @@ namespace TalkIsCheap
             _notifyIcon = new TaskbarIcon
             {
                 ToolTipText = "TalkIsCheap",
-                ContextMenu = BuildContextMenu(),
-                MenuActivation = PopupActivationMode.LeftOrRightClick
+                ContextMenu = BuildContextMenu()
             };
 
             // Set initial icon

@@ -283,7 +283,7 @@ namespace TalkIsCheap.Models
             {
                 var hwnd = GetForegroundWindow();
                 GetWindowThreadProcessId(hwnd, out uint pid);
-                var process = Process.GetProcessById((int)pid);
+                var process = System.Diagnostics.Process.GetProcessById((int)pid);
                 var processName = process.ProcessName.ToLowerInvariant();
 
                 var mapping = new Dictionary<string, string>
@@ -312,7 +312,7 @@ namespace TalkIsCheap.Models
 
                 foreach (var kvp in mapping)
                 {
-                    if (processName.Contains(kvp.Key))
+                    if (processName.Contains(kvp.Key, StringComparison.Ordinal))
                     {
                         Logger.Write($"App-aware: {processName} -> {kvp.Value}");
                         return kvp.Value;
