@@ -23,6 +23,7 @@ namespace TalkIsCheap.Views
             LoadSettings();
             RefreshLicenseUI();
             _isLoading = false;
+            UpdateWhisperPanel();
         }
 
         private void LoadSettings()
@@ -176,7 +177,92 @@ namespace TalkIsCheap.Views
             {
                 _settings.SttProvider = item.Tag?.ToString() ?? "groq";
                 _settings.Save();
+                UpdateWhisperPanel();
             }
+        }
+
+        private void UpdateWhisperPanel()
+        {
+            if (WhisperLocalPanel == null) return;
+
+            var isLocal = _settings.SttProvider == "local";
+            WhisperLocalPanel.Visibility = isLocal ? Visibility.Visible : Visibility.Collapsed;
+
+            if (isLocal)
+            {
+                // Select current model in combo
+                foreach (ComboBoxItem item in WhisperModelCombo.Items)
+                {
+                    if (item.Tag?.ToString() == _settings.WhisperModel)
+                    {
+                        WhisperModelCombo.SelectedItem = item;
+                        break;
+                    }
+                }
+
+                var service = WhisperLocalService.Shared;
+                if (service.IsReady)
+                {
+                    WhisperStatusText.Text = "Ready - local Whisper is installed";
+                    WhisperStatusText.Foreground = Brushes.Green;
+                    WhisperDownloadBtn.Visibility = Visibility.Collapsed;
+                    WhisperProgress.Visibility = Visibility.Collapsed;
+                }
+                else
+                {
+                    WhisperStatusText.Text = service.BinaryExists
+                        ? $"Model ggml-{_settings.WhisperModel} not downloaded"
+                        : "whisper.cpp not downloaded";
+                    WhisperStatusText.Foreground = Brushes.Orange;
+                    WhisperDownloadBtn.Visibility = Visibility.Visible;
+                }
+            }
+        }
+
+        private void WhisperModel_Changed(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isLoading) return;
+            if (WhisperModelCombo.SelectedItem is ComboBoxItem item)
+            {
+                _settings.WhisperModel = item.Tag?.ToString() ?? "base";
+                _settings.Save();
+                UpdateWhisperPanel();
+            }
+        }
+
+        private async void WhisperDownload_Click(object sender, RoutedEventArgs e)
+        {
+            WhisperDownloadBtn.IsEnabled = false;
+            WhisperDownloadBtn.Content = "Downloading...";
+            WhisperProgress.Visibility = Visibility.Visible;
+            WhisperProgress.Value = 0;
+
+            try
+            {
+                await WhisperLocalService.Shared.Download(_settings.WhisperModel, (pct, status) =>
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        WhisperProgress.Value = pct;
+                        WhisperStatusText.Text = status;
+                        WhisperStatusText.Foreground = Brushes.Gray;
+                    });
+                });
+
+                WhisperStatusText.Text = "Ready - local Whisper is installed";
+                WhisperStatusText.Foreground = Brushes.Green;
+                WhisperDownloadBtn.Visibility = Visibility.Collapsed;
+            }
+            catch (Exception ex)
+            {
+                WhisperStatusText.Text = $"Download failed: {ex.Message}";
+                WhisperStatusText.Foreground = Brushes.Red;
+                Logger.Write($"Whisper download failed: {ex.Message}");
+            }
+
+            WhisperDownloadBtn.IsEnabled = true;
+            WhisperDownloadBtn.Content = "Download Whisper";
+            WhisperProgress.Visibility = Visibility.Collapsed;
         }
 
         private void Language_Changed(object sender, SelectionChangedEventArgs e)

@@ -32,8 +32,22 @@
                     <TextBlock Style="{StaticResource FieldLabel}" Text="Engine"/>
                     <ComboBox x:Name="SttProviderCombo" SelectionChanged="SttProvider_Changed">
                         <ComboBoxItem Content="Groq Cloud (fast, recommended)" Tag="groq"/>
-                        <ComboBoxItem Content="Local Whisper (not supported on Windows)" Tag="local" IsEnabled="False"/>
+                        <ComboBoxItem Content="Local Whisper (auto-downloads on first use)" Tag="local"/>
                     </ComboBox>
+
+                    <StackPanel x:Name="WhisperLocalPanel" Visibility="Collapsed" Margin="0,8,0,0">
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="Whisper Model"/>
+                        <ComboBox x:Name="WhisperModelCombo" SelectionChanged="WhisperModel_Changed">
+                            <ComboBoxItem Content="Tiny (~75 MB, fastest)" Tag="tiny"/>
+                            <ComboBoxItem Content="Base (~150 MB, recommended)" Tag="base"/>
+                            <ComboBoxItem Content="Small (~500 MB, better quality)" Tag="small"/>
+                            <ComboBoxItem Content="Medium (~1.5 GB, best quality)" Tag="medium"/>
+                        </ComboBox>
+                        <TextBlock x:Name="WhisperStatusText" Style="{StaticResource HintText}" Text="" Margin="0,4,0,0"/>
+                        <ProgressBar x:Name="WhisperProgress" Visibility="Collapsed" Height="8" Margin="0,4,0,0" Minimum="0" Maximum="100"/>
+                        <Button x:Name="WhisperDownloadBtn" Content="Download Whisper" Click="WhisperDownload_Click"
+                                HorizontalAlignment="Left" Padding="12,4" Margin="0,6,0,0" Visibility="Collapsed"/>
+                    </StackPanel>
 
                     <TextBlock Style="{StaticResource FieldLabel}" Text="Language"/>
                     <ComboBox x:Name="LanguageCombo" SelectionChanged="Language_Changed"/>

@@ -30,10 +30,15 @@ namespace TalkIsCheap.Services
         private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(60) };
 
         /// <summary>
-        /// Transcribe WAV audio data using Groq Cloud API.
+        /// Transcribe WAV audio data using configured provider (Groq Cloud or Local Whisper).
         /// </summary>
         public async Task<string> Transcribe(byte[] wavData, string? language)
         {
+            if (AppSettings.Shared.SttProvider == "local")
+            {
+                return await WhisperLocalService.Shared.Transcribe(wavData, language);
+            }
+
             var apiKey = AppSettings.Shared.GroqApiKey;
             if (string.IsNullOrWhiteSpace(apiKey))
                 throw new InvalidOperationException("Groq API key not set. Open Settings to configure.");

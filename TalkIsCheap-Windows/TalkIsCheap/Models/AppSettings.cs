@@ -45,6 +45,10 @@ namespace TalkIsCheap.Models
         [JsonProperty("polishProvider")]
         public string PolishProvider { get; set; } = "anthropic";
 
+        // Local Whisper
+        [JsonProperty("whisperModel")]
+        public string WhisperModel { get; set; } = "base";
+
         // Language
         [JsonProperty("language")]
         public string Language { get; set; } = "de";
