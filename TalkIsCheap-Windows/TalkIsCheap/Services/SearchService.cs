@@ -43,7 +43,16 @@ namespace TalkIsCheap.Services
             }
         }
 
-        private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(30) };
+        private readonly HttpClient _httpClient;
+
+        private SearchService()
+        {
+            var handler = new HttpClientHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate
+            };
+            _httpClient = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+        }
 
         /// <summary>
         /// Perform a voice search: Brave Search API + Claude summarization.

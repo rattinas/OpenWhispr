@@ -96,8 +96,8 @@ namespace TalkIsCheap.Services
         private bool _disposed;
 
         // Timing constants (in ticks, 10000 ticks = 1ms)
-        private const long DoubleTapWindowTicks = 4000000;  // 0.4s
-        private const long HoldThresholdTicks = 3000000;     // 0.3s
+        private const long DoubleTapWindowTicks = 5000000;  // 0.5s
+        private const long HoldThresholdTicks = 2500000;     // 0.25s
 
         private const int VK_LALT = 0xA4;
         private const int VK_RALT = 0xA5;
@@ -202,6 +202,8 @@ namespace TalkIsCheap.Services
             return CallNextHookEx(_hookId, nCode, wParam, lParam);
         }
 
+        private Timer? _delayedDictationTimer;
+
         private void HandleCtrlDown(bool shiftDown)
         {
             if (_controlIsDown) return;
@@ -212,7 +214,7 @@ namespace TalkIsCheap.Services
                 _isHandsFreeMode = true;
                 _controlIsDown = true;
                 _otherKeyPressed = false;
-                Logger.Write("HANDS-FREE START (Ctrl+Shift)");
+                Logger.Write("HANDS-FREE START (hotkey+Shift)");
                 ThreadPool.QueueUserWorkItem(_ => OnKeyDown?.Invoke());
                 return;
             }
@@ -226,6 +228,10 @@ namespace TalkIsCheap.Services
             var now = DateTime.UtcNow.Ticks;
             if (now - _lastCtrlReleaseTicks < DoubleTapWindowTicks && _lastCtrlReleaseTicks > 0)
             {
+                // Cancel any pending delayed dictation
+                _delayedDictationTimer?.Dispose();
+                _delayedDictationTimer = null;
+
                 _isSearchRecording = true;
                 _lastCtrlReleaseTicks = 0;
                 Logger.Write("SEARCH: START (double-tap)");
@@ -233,16 +239,28 @@ namespace TalkIsCheap.Services
                 return;
             }
 
-            // Start dictation immediately
-            _dictationStarted = true;
-            Logger.Write("DICTATION: START (hold)");
-            ThreadPool.QueueUserWorkItem(_ => OnKeyDown?.Invoke());
+            // Don't start dictation immediately — wait a bit to see if it's a double-tap
+            // But if user holds long enough, start dictation via the delayed timer
+            _delayedDictationTimer?.Dispose();
+            _delayedDictationTimer = new Timer(_ =>
+            {
+                if (_controlIsDown && !_dictationStarted && !_isSearchRecording)
+                {
+                    _dictationStarted = true;
+                    Logger.Write("DICTATION: START (hold)");
+                    ThreadPool.QueueUserWorkItem(__ => OnKeyDown?.Invoke());
+                }
+            }, null, 250, Timeout.Infinite); // 250ms delay before starting dictation
         }
 
         private void HandleCtrlUp(bool shiftDown)
         {
             if (!_controlIsDown) return;
             _controlIsDown = false;
+
+            // Cancel delayed dictation timer
+            _delayedDictationTimer?.Dispose();
+            _delayedDictationTimer = null;
 
             // Released from hands-free
             if (_isHandsFreeMode)
@@ -276,15 +294,18 @@ namespace TalkIsCheap.Services
             var now = DateTime.UtcNow.Ticks;
             var holdDuration = now - _pushStartTicks;
 
-            if (holdDuration < HoldThresholdTicks)
+            if (!_dictationStarted)
+            {
+                // Was a short tap before dictation even started — remember for double-tap
+                Logger.Write($"SHORT TAP ({holdDuration / 10000}ms) - waiting for double-tap");
+                _lastCtrlReleaseTicks = now;
+            }
+            else if (holdDuration < HoldThresholdTicks)
             {
                 // Short tap -- cancel dictation, remember for double-tap
-                if (_dictationStarted)
-                {
-                    _dictationStarted = false;
-                    Logger.Write($"DICTATION: CANCEL (short tap {holdDuration / 10000}ms)");
-                    ThreadPool.QueueUserWorkItem(_ => OnCancel?.Invoke());
-                }
+                _dictationStarted = false;
+                Logger.Write($"DICTATION: CANCEL (short tap {holdDuration / 10000}ms)");
+                ThreadPool.QueueUserWorkItem(_ => OnCancel?.Invoke());
                 _lastCtrlReleaseTicks = now;
             }
             else
