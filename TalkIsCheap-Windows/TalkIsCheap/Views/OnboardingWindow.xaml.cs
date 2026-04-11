@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
 using TalkIsCheap.Models;
+using TalkIsCheap.Services;
 
 namespace TalkIsCheap.Views
 {
@@ -78,45 +79,198 @@ namespace TalkIsCheap.Views
             NextButton.Content = "Continue";
         }
 
+        // Fields for speech engine step
+        private StackPanel? _groqPanel;
+        private StackPanel? _localPanel;
+        private ProgressBar? _onboardWhisperProgress;
+        private TextBlock? _onboardWhisperStatus;
+        private bool _whisperDownloading;
+
         // Step 3: Speech Engine
         private void BuildSpeechEngine()
         {
             AddStepHeader("Speech Recognition", "Choose how TalkIsCheap hears you");
             AddSpacer(8);
 
-            AddCenteredText("Groq Cloud is the recommended engine for Windows.\nFree API key, blazing fast, highly accurate.", 12, FontWeights.Normal, Brushes.Gray);
+            // Provider choice buttons
+            var choicePanel = new StackPanel();
+
+            var groqBtn = MakeChoiceCard(
+                "\u2601  Groq Cloud", "Fast, accurate, free API key needed",
+                _settings.SttProvider == "groq", "#0078D7");
+            groqBtn.MouseLeftButtonUp += (s, e) =>
+            {
+                _settings.SttProvider = "groq";
+                _settings.Save();
+                ShowStep(_step);
+            };
+            choicePanel.Children.Add(groqBtn);
+
+            var localBtn = MakeChoiceCard(
+                "\U0001F4BB  Local Whisper", "Runs on your PC, no API key needed, auto-downloads (~150 MB)",
+                _settings.SttProvider == "local", "#8B5CF6");
+            localBtn.MouseLeftButtonUp += (s, e) =>
+            {
+                _settings.SttProvider = "local";
+                _settings.Save();
+                ShowStep(_step);
+            };
+            choicePanel.Children.Add(localBtn);
+
+            ContentPanel.Children.Add(choicePanel);
             AddSpacer(12);
 
-            ContentPanel.Children.Add(new TextBlock
+            if (_settings.SttProvider == "groq")
             {
-                Text = "Groq API Key",
-                FontWeight = FontWeights.SemiBold,
-                FontSize = 12,
-                Margin = new Thickness(0, 8, 0, 4)
-            });
+                // Groq API key input
+                _groqPanel = new StackPanel();
+                _groqPanel.Children.Add(new TextBlock
+                {
+                    Text = "Groq API Key",
+                    FontWeight = FontWeights.SemiBold,
+                    FontSize = 12,
+                    Margin = new Thickness(0, 0, 0, 4)
+                });
 
-            _groqKeyBox = new PasswordBox { Password = _settings.GroqApiKey };
-            _groqKeyBox.PasswordChanged += (s, e) =>
-            {
-                _settings.GroqApiKey = _groqKeyBox.Password;
-                _settings.Save();
-            };
-            ContentPanel.Children.Add(_groqKeyBox);
+                _groqKeyBox = new PasswordBox { Password = _settings.GroqApiKey };
+                _groqKeyBox.PasswordChanged += (s, e) =>
+                {
+                    _settings.GroqApiKey = _groqKeyBox.Password;
+                    _settings.Save();
+                };
+                _groqPanel.Children.Add(_groqKeyBox);
 
-            var link = new TextBlock { FontSize = 11, Margin = new Thickness(0, 4, 0, 0) };
-            var hl = new Hyperlink(new Run("Get free key at console.groq.com"))
+                var link = new TextBlock { FontSize = 11, Margin = new Thickness(0, 4, 0, 0) };
+                var hl = new Hyperlink(new Run("Get free key at console.groq.com"))
+                {
+                    NavigateUri = new Uri("https://console.groq.com/keys")
+                };
+                hl.RequestNavigate += (s, e) =>
+                {
+                    Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+                    e.Handled = true;
+                };
+                link.Inlines.Add(hl);
+                _groqPanel.Children.Add(link);
+
+                ContentPanel.Children.Add(_groqPanel);
+            }
+            else
             {
-                NavigateUri = new Uri("https://console.groq.com/keys")
-            };
-            hl.RequestNavigate += (s, e) =>
-            {
-                Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
-                e.Handled = true;
-            };
-            link.Inlines.Add(hl);
-            ContentPanel.Children.Add(link);
+                // Local Whisper — auto-download
+                _localPanel = new StackPanel();
+
+                if (WhisperLocalService.Shared.IsReady)
+                {
+                    _onboardWhisperStatus = new TextBlock
+                    {
+                        Text = "\u2705 Local Whisper is ready!",
+                        FontSize = 13,
+                        Foreground = Brushes.Green,
+                        FontWeight = FontWeights.SemiBold,
+                        HorizontalAlignment = HorizontalAlignment.Center
+                    };
+                    _localPanel.Children.Add(_onboardWhisperStatus);
+                }
+                else
+                {
+                    _onboardWhisperStatus = new TextBlock
+                    {
+                        Text = "Downloading whisper.cpp + model...",
+                        FontSize = 12,
+                        Foreground = Brushes.Gray,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        Margin = new Thickness(0, 0, 0, 8)
+                    };
+                    _localPanel.Children.Add(_onboardWhisperStatus);
+
+                    _onboardWhisperProgress = new ProgressBar
+                    {
+                        Height = 10,
+                        Minimum = 0,
+                        Maximum = 100,
+                        Margin = new Thickness(0, 0, 0, 4)
+                    };
+                    _localPanel.Children.Add(_onboardWhisperProgress);
+
+                    // Auto-start download
+                    if (!_whisperDownloading)
+                        StartWhisperDownload();
+                }
+
+                ContentPanel.Children.Add(_localPanel);
+            }
 
             NextButton.Content = "Continue";
+        }
+
+        private async void StartWhisperDownload()
+        {
+            _whisperDownloading = true;
+            NextButton.IsEnabled = false;
+
+            try
+            {
+                await WhisperLocalService.Shared.Download(_settings.WhisperModel, (pct, status) =>
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (_onboardWhisperProgress != null)
+                            _onboardWhisperProgress.Value = pct;
+                        if (_onboardWhisperStatus != null)
+                            _onboardWhisperStatus.Text = status;
+                    });
+                });
+
+                Dispatcher.Invoke(() =>
+                {
+                    if (_onboardWhisperStatus != null)
+                    {
+                        _onboardWhisperStatus.Text = "\u2705 Local Whisper is ready!";
+                        _onboardWhisperStatus.Foreground = Brushes.Green;
+                        _onboardWhisperStatus.FontWeight = FontWeights.SemiBold;
+                    }
+                    if (_onboardWhisperProgress != null)
+                        _onboardWhisperProgress.Visibility = Visibility.Collapsed;
+                    NextButton.IsEnabled = true;
+                });
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    if (_onboardWhisperStatus != null)
+                    {
+                        _onboardWhisperStatus.Text = $"Download failed: {ex.Message}";
+                        _onboardWhisperStatus.Foreground = Brushes.Red;
+                    }
+                    NextButton.IsEnabled = true;
+                });
+            }
+
+            _whisperDownloading = false;
+        }
+
+        private Border MakeChoiceCard(string title, string desc, bool selected, string colorHex)
+        {
+            var color = (Color)ColorConverter.ConvertFromString(colorHex);
+            var border = new Border
+            {
+                Background = selected ? new SolidColorBrush(Color.FromArgb(25, color.R, color.G, color.B)) : Brushes.WhiteSmoke,
+                BorderBrush = selected ? new SolidColorBrush(color) : Brushes.Transparent,
+                BorderThickness = new Thickness(2),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(14, 10, 14, 10),
+                Margin = new Thickness(0, 4, 0, 4),
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+
+            var sp = new StackPanel();
+            sp.Children.Add(new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, FontSize = 14 });
+            sp.Children.Add(new TextBlock { Text = desc, FontSize = 11, Foreground = Brushes.Gray, TextWrapping = TextWrapping.Wrap });
+            border.Child = sp;
+
+            return border;
         }
 
         // Step 4: Polish Engine
