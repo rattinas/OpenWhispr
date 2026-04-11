@@ -15,3 +15,6 @@ _python_prototype/venv/
 node_modules/
 .next/
 .env.local
+TalkIsCheap-Windows/TalkIsCheap/obj/
+TalkIsCheap-Windows/**/obj/
+TalkIsCheap-Windows/**/bin/
