@@ -27,19 +27,67 @@ namespace TalkIsCheap
         {
             base.OnStartup(e);
 
+            // Global exception handlers to prevent silent crashes
+            DispatcherUnhandledException += (s, args) =>
+            {
+                Services.Logger.Write($"UNHANDLED UI EXCEPTION: {args.Exception}");
+                MessageBox.Show($"TalkIsCheap Error:\n{args.Exception.Message}", "TalkIsCheap", MessageBoxButton.OK, MessageBoxImage.Error);
+                args.Handled = true;
+            };
+            AppDomain.CurrentDomain.UnhandledException += (s, args) =>
+            {
+                Services.Logger.Write($"UNHANDLED EXCEPTION: {args.ExceptionObject}");
+            };
+            TaskScheduler.UnobservedTaskException += (s, args) =>
+            {
+                Services.Logger.Write($"UNOBSERVED TASK EXCEPTION: {args.Exception}");
+                args.SetObserved();
+            };
+
+            try
+            {
+                StartApp();
+            }
+            catch (Exception ex)
+            {
+                Services.Logger.Write($"STARTUP CRASH: {ex}");
+                MessageBox.Show($"TalkIsCheap failed to start:\n{ex.Message}\n\nCheck log at:\n{Services.Logger.LogPath}", "TalkIsCheap", MessageBoxButton.OK, MessageBoxImage.Error);
+                Shutdown(1);
+            }
+        }
+
+        private void StartApp()
+        {
             Services.Logger.Write("=== STARTUP v2.0 (Windows) ===");
 
-            // Create system tray icon
-            var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "icon.ico");
-            Services.Logger.Write($"Icon path: {iconPath}, exists: {File.Exists(iconPath)}");
-
+            // Find icon — check multiple paths (SingleFile extracts to different locations)
             System.Drawing.Icon trayIcon;
-            if (File.Exists(iconPath))
-                trayIcon = new System.Drawing.Icon(iconPath);
-            else
-                trayIcon = System.Drawing.SystemIcons.Application;
+            try
+            {
+                var basePaths = new[]
+                {
+                    AppDomain.CurrentDomain.BaseDirectory,
+                    Path.GetDirectoryName(Environment.ProcessPath) ?? "",
+                    AppContext.BaseDirectory,
+                };
 
-            Services.Logger.Write($"Creating TaskbarIcon with icon: {trayIcon.Width}x{trayIcon.Height}");
+                string? iconPath = null;
+                foreach (var basePath in basePaths)
+                {
+                    var candidate = Path.Combine(basePath, "Resources", "icon.ico");
+                    if (File.Exists(candidate)) { iconPath = candidate; break; }
+                    candidate = Path.Combine(basePath, "icon.ico");
+                    if (File.Exists(candidate)) { iconPath = candidate; break; }
+                }
+
+                Services.Logger.Write($"Icon path: {iconPath ?? "NOT FOUND"}");
+                trayIcon = iconPath != null ? new System.Drawing.Icon(iconPath) : System.Drawing.SystemIcons.Application;
+            }
+            catch (Exception ex)
+            {
+                Services.Logger.Write($"Icon load failed: {ex.Message}");
+                trayIcon = System.Drawing.SystemIcons.Application;
+            }
 
             _notifyIcon = new TaskbarIcon();
             _notifyIcon.Icon = trayIcon;

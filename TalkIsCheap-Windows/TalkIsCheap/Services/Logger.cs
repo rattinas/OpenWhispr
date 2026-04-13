@@ -7,7 +7,7 @@ namespace TalkIsCheap.Services
     {
         private static readonly string LogDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TalkIsCheap");
-        private static readonly string LogPath = Path.Combine(LogDir, "debug.log");
+        public static readonly string LogPath = Path.Combine(LogDir, "debug.log");
         private static readonly object _lock = new();
 
         public static void Write(string message)
