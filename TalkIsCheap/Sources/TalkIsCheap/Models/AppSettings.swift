@@ -30,8 +30,14 @@ final class AppSettings: ObservableObject {
     // Cassette overlay
     @AppStorage("cassetteOpacity") var cassetteOpacity: Double = 0.7
 
-    // License
+    // Audio dimming
+    @AppStorage("dimAudioWhileRecording") var dimAudioWhileRecording: Bool = true
+
+    // License & Activation
     @AppStorage("licenseKey") var licenseKey: String = ""
+    @AppStorage("activationToken") var activationToken: String = ""
+    @AppStorage("activatedAt") var activatedAt: String = ""
+    @AppStorage("lastValidationCheck") var lastValidationCheck: Double = 0
     @AppStorage("trialUses") var trialUses: Int = 0
 
     // Onboarding
@@ -39,6 +45,7 @@ final class AppSettings: ObservableObject {
 
     // Polish mode
     @AppStorage("activePolishMode") var activePolishMode: String = "clean"
+    @AppStorage("appAwareContext") var appAwareContext: Bool = true
 
     static let languages: [(code: String, name: String)] = [
         ("auto", "Auto-Detect"),
@@ -58,4 +65,29 @@ final class AppSettings: ObservableObject {
 
     var isTrialExpired: Bool { trialUses >= Self.trialLimit }
     var remainingTrial: Int { max(0, Self.trialLimit - trialUses) }
+
+    /// Human-readable name for the current hotkey
+    var hotkeyName: String {
+        switch hotkeyCode {
+        case 0, 59, 62: return "Control"
+        case 0x60: return "F5"
+        case 0x61: return "F6"
+        case 0x64: return "F8"
+        case 0x65: return "F9"
+        case 0x3B: return "Control"
+        default: return "Key"
+        }
+    }
+
+    /// Short name for UI labels
+    var hotkeyShort: String {
+        switch hotkeyCode {
+        case 0, 59, 62, 0x3B: return "Ctrl"
+        case 0x60: return "F5"
+        case 0x61: return "F6"
+        case 0x64: return "F8"
+        case 0x65: return "F9"
+        default: return "Key"
+        }
+    }
 }

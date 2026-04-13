@@ -27,7 +27,7 @@ struct HistoryView: View {
                         .foregroundStyle(.tertiary)
                     Text("No transcriptions yet")
                         .foregroundStyle(.secondary)
-                    Text("Hold Control and speak to get started")
+                    Text("Hold your hotkey and speak to get started")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }

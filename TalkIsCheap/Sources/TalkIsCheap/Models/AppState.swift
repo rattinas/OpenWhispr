@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import UserNotifications
+import AppKit
 
 /// Central app state
 @MainActor
@@ -38,9 +39,9 @@ final class AppState: ObservableObject {
     var statusText: String {
         switch status {
         case .loading: return "Loading..."
-        case .ready: return "Ready — hold Control to dictate"
+        case .ready: return "Ready — hold your hotkey to dictate"
         case .recording:
-            if HotkeyManager.shared.isHandsFree { return "🎙 Hands-free — release Ctrl+Shift" }
+            if HotkeyManager.shared.isHandsFree { return "🎙 Hands-free — release to stop" }
             return "Recording..."
         case .transcribing: return "Transcribing..."
         case .polishing: return "Polishing..."
@@ -52,7 +53,7 @@ final class AppState: ObservableObject {
     func startRecording() {
         // Check license
         guard LicenseManager.canUse else {
-            status = .error("Trial expired — enter license key")
+            status = .error("Trial expired — buy license in menu bar")
             SoundFeedback.error()
             return
         }
@@ -71,14 +72,25 @@ final class AppState: ObservableObject {
         }
 
         Log.write("startRecording")
+        AudioDimmer.shared.dim()
         SoundFeedback.recordStart()
         recorder.start()
         status = .recording
         EqualizerOverlay.shared.show()
     }
 
+    func cancelRecording() {
+        guard case .recording = status else { return }
+        Log.write("cancelRecording (short tap)")
+        _ = recorder.stop()
+        AudioDimmer.shared.restore()
+        status = .ready
+        EqualizerOverlay.shared.hide()
+    }
+
     func stopAndProcess() {
         Log.write("stopAndProcess")
+        AudioDimmer.shared.restore()
         SoundFeedback.recordStop()
         let wavData = recorder.stop()
         Log.write("wav size: \(wavData.count)")
@@ -89,7 +101,7 @@ final class AppState: ObservableObject {
 
     private func process(wavData: Data) async {
         let startTime = Date()
-        let modeName = settings.activePolishMode
+        let modeName = appAwareMode() ?? settings.activePolishMode
 
         do {
             // Transcribe
@@ -98,7 +110,7 @@ final class AppState: ObservableObject {
                 wavData: wavData,
                 language: settings.language == "auto" ? nil : settings.language
             )
-            Log.write("RAW: \(rawText)")
+            Log.write("RAW: \(rawText.prefix(80))...")
 
             guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 status = .error("No speech detected")
@@ -120,7 +132,7 @@ final class AppState: ObservableObject {
                 Log.write("Polish failed: \(error), using raw text")
                 polished = rawText
             }
-            Log.write("POLISHED: \(polished)")
+            Log.write("POLISHED: \(polished.prefix(80))...")
 
             // Paste
             PasteService.paste(polished)
@@ -160,17 +172,25 @@ final class AppState: ObservableObject {
     // MARK: - Voice Search (Ctrl+Cmd)
 
     func startSearchRecording() {
+        guard LicenseManager.canUse else {
+            status = .error("Trial expired — buy license in menu bar")
+            SoundFeedback.error()
+            return
+        }
+
         Log.write("startSearchRecording")
+        AudioDimmer.shared.dim()
         SoundFeedback.recordStart()
         recorder.start()
         status = .recording
-        EqualizerOverlay.shared.show() // Show cassette!
+        EqualizerOverlay.shared.show()
         SearchPanelManager.shared.state = .listening
         SearchPanelManager.shared.show()
     }
 
     func stopSearchAndProcess() {
         Log.write("stopSearchAndProcess")
+        AudioDimmer.shared.restore()
         SoundFeedback.recordStop()
         let wavData = recorder.stop()
         status = .transcribing
@@ -210,6 +230,56 @@ final class AppState: ObservableObject {
             SearchPanelManager.shared.showError(error.localizedDescription)
             status = .ready
         }
+    }
+
+    // MARK: - App-Aware Context
+
+    /// Returns a polish mode ID based on the frontmost app, or nil to use the user's selected mode.
+    /// Only overrides when the user has "clean" (default) selected — respects manual mode choices.
+    private func appAwareMode() -> String? {
+        guard settings.appAwareContext else { return nil }
+        guard settings.activePolishMode == "clean" else { return nil }
+
+        guard let bundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return nil }
+
+        let mapping: [String: String] = [
+            // Chat & Messaging → Casual
+            "com.tinyspeck.slackmacgap": "casual",
+            "com.apple.MobileSMS": "casual",
+            "ru.keepcoder.Telegram": "casual",
+            "net.whatsapp.WhatsApp": "casual",
+            "com.hnc.Discord": "casual",
+            "com.facebook.archon.developerID": "casual",
+
+            // Email → Email
+            "com.apple.mail": "email",
+            "com.google.Gmail": "email",
+            "com.microsoft.Outlook": "email",
+            "com.readdle.smartemail-macos": "email",
+
+            // IDEs & Code → Code
+            "com.microsoft.VSCode": "coding",
+            "com.apple.dt.Xcode": "coding",
+            "com.jetbrains.intellij": "coding",
+            "com.sublimetext.4": "coding",
+            "dev.zed.Zed": "coding",
+            "com.todesktop.230313mzl4w4u92": "coding", // Cursor
+
+            // Business & Docs → Professional
+            "com.apple.iWork.Pages": "professional",
+            "com.apple.iWork.Keynote": "professional",
+            "com.microsoft.Word": "professional",
+            "com.microsoft.Powerpoint": "professional",
+            "com.google.Chrome": "professional",
+            "com.notion.id": "professional",
+            "com.linear": "professional",
+        ]
+
+        if let mode = mapping[bundleId] {
+            Log.write("App-aware: \(bundleId) → \(mode)")
+            return mode
+        }
+        return nil
     }
 
     private func hideOverlayAfterDelay() {

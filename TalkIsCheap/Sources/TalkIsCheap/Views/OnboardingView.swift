@@ -1,11 +1,19 @@
 import SwiftUI
+import AVFoundation
 
 struct OnboardingView: View {
     @ObservedObject var settings = AppSettings.shared
+    @ObservedObject var localSetup = LocalSetupService.shared
     @State private var step = 0
+    @State private var micGranted = PermissionManager.micPermissionGranted
+    @State private var accessibilityGranted = AXIsProcessTrusted()
     @Environment(\.dismiss) private var dismiss
 
-    private let totalSteps = 5
+    private var needsLocalInstall: Bool {
+        settings.sttProvider == "local" || settings.polishProvider == "ollama"
+    }
+
+    private let totalSteps = 9
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,7 +23,7 @@ struct OnboardingView: View {
                     Rectangle().fill(Color.secondary.opacity(0.1))
                     Rectangle().fill(Color.accentColor)
                         .frame(width: geo.size.width * CGFloat(step + 1) / CGFloat(totalSteps))
-                        .animation(.easeInOut, value: step)
+                        .animation(.easeInOut(duration: 0.3), value: step)
                 }
             }
             .frame(height: 3)
@@ -24,60 +32,138 @@ struct OnboardingView: View {
             Group {
                 switch step {
                 case 0: welcomeStep
-                case 1: speechStep
-                case 2: polishStep
-                case 3: languageStep
-                case 4: doneStep
-                default: doneStep
+                case 1: permissionsStep
+                case 2: speechStep
+                case 3: polishStep
+                case 4: localInstallStep
+                case 5: languageStep
+                case 6: howToDictateStep
+                case 7: polishModesStep
+                case 8: readyStep
+                default: readyStep
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(32)
+            .transition(.asymmetric(
+                insertion: .move(edge: .trailing).combined(with: .opacity),
+                removal: .move(edge: .leading).combined(with: .opacity)
+            ))
+            .id(step)
         }
-        .frame(width: 480, height: 400)
+        .frame(width: 520, height: 520)
     }
 
-    // MARK: - Steps
+    // MARK: - Step 1: Welcome
 
     private var welcomeStep: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
+            Spacer()
+
             Image(systemName: "mic.circle.fill")
-                .font(.system(size: 64))
+                .font(.system(size: 72))
                 .foregroundStyle(.blue)
+                .shadow(color: .blue.opacity(0.3), radius: 20)
 
             Text("TalkIsCheap")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .font(.system(size: 32, weight: .bold, design: .rounded))
 
-            Text("Your voice, polished and pasted.\nHold a key, speak, release.")
-                .multilineTextAlignment(.center)
+            Text("Your voice — polished and pasted.")
+                .font(.title3)
                 .foregroundStyle(.secondary)
+
+            VStack(spacing: 8) {
+                featureBullet(icon: "keyboard", text: "Hold a key, speak, release")
+                featureBullet(icon: "sparkles", text: "AI cleans up your text instantly")
+                featureBullet(icon: "doc.on.clipboard", text: "Auto-pasted wherever your cursor is")
+            }
+            .padding(.top, 8)
+
+            Text("50 free uses included. No credit card needed.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 4)
 
             Spacer()
 
-            nextButton("Get Started")
+            nextButton("Let's set up")
         }
     }
 
+    // MARK: - Step 2: Permissions
+
+    private var permissionsStep: some View {
+        VStack(spacing: 16) {
+            stepHeader(icon: "lock.shield", title: "Permissions", subtitle: "TalkIsCheap needs two permissions to work")
+
+            Spacer()
+
+            VStack(spacing: 16) {
+                permissionCard(
+                    icon: "mic.fill",
+                    title: "Microphone Access",
+                    desc: "To hear your voice when you dictate",
+                    granted: micGranted,
+                    action: {
+                        PermissionManager.requestMicPermission { granted in
+                            micGranted = granted
+                        }
+                    }
+                )
+
+                permissionCard(
+                    icon: "hand.raised.fill",
+                    title: "Accessibility Access",
+                    desc: "To paste text at your cursor position",
+                    granted: accessibilityGranted,
+                    action: {
+                        // Show native system prompt (triggers the macOS dialog)
+                        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+                        AXIsProcessTrustedWithOptions(opts)
+                        // Poll for grant (stop after 120s)
+                        var pollCount = 0
+                        Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { timer in
+                            pollCount += 1
+                            if AXIsProcessTrusted() {
+                                accessibilityGranted = true
+                                timer.invalidate()
+                            } else if pollCount > 80 {
+                                timer.invalidate()
+                            }
+                        }
+                    }
+                )
+            }
+
+            Text("These permissions stay on your Mac. We never access your data.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+
+            Spacer()
+
+            nextButton()
+        }
+    }
+
+    // MARK: - Step 3: Speech Engine
+
     private var speechStep: some View {
         VStack(spacing: 16) {
-            Label("Speech Recognition", systemImage: "mic.fill")
-                .font(.title2.bold())
-
-            Text("How should TalkIsCheap understand your voice?")
-                .foregroundStyle(.secondary)
+            stepHeader(icon: "mic.fill", title: "Speech Recognition", subtitle: "Choose how TalkIsCheap hears you")
 
             Spacer()
 
             VStack(spacing: 12) {
                 providerCard(
                     title: "☁️ Groq Cloud",
-                    subtitle: "Fast, accurate, free API key",
+                    subtitle: "Blazing fast, highly accurate, free API key",
                     isSelected: settings.sttProvider == "groq",
                     action: { settings.sttProvider = "groq" }
                 )
                 providerCard(
-                    title: "💻 Local Whisper",
-                    subtitle: "Fully offline, ~1.6GB download",
+                    title: "💻 Local (mlx-whisper)",
+                    subtitle: "Fully offline, ~1.6GB download, slower",
                     isSelected: settings.sttProvider == "local",
                     action: { settings.sttProvider = "local" }
                 )
@@ -88,11 +174,17 @@ struct OnboardingView: View {
                     Text("Groq API Key").font(.caption.bold())
                     SecureField("gsk_...", text: $settings.groqApiKey)
                         .textFieldStyle(.roundedBorder)
-                    Link("Get free key at console.groq.com →",
-                         destination: URL(string: "https://console.groq.com/keys")!)
-                        .font(.caption)
+                    HStack {
+                        Link("Get free key →", destination: URL(string: "https://console.groq.com/keys")!)
+                            .font(.caption)
+                        Spacer()
+                        skipButton("Use local instead") {
+                            settings.sttProvider = "local"
+                            withAnimation { step += 1 }
+                        }
+                    }
                 }
-                .padding(.top, 8)
+                .padding(.top, 4)
             }
 
             Spacer()
@@ -100,26 +192,24 @@ struct OnboardingView: View {
         }
     }
 
+    // MARK: - Step 4: Polish Engine
+
     private var polishStep: some View {
         VStack(spacing: 16) {
-            Label("Text Polishing", systemImage: "sparkles")
-                .font(.title2.bold())
-
-            Text("How should TalkIsCheap clean up your text?")
-                .foregroundStyle(.secondary)
+            stepHeader(icon: "sparkles", title: "Text Polishing", subtitle: "AI cleans up grammar, removes filler words, and formats your text")
 
             Spacer()
 
             VStack(spacing: 12) {
                 providerCard(
                     title: "☁️ Anthropic Claude",
-                    subtitle: "Best quality, ~$0.001/dictation",
+                    subtitle: "Best quality, ~$0.001 per dictation",
                     isSelected: settings.polishProvider == "anthropic",
                     action: { settings.polishProvider = "anthropic" }
                 )
                 providerCard(
-                    title: "💻 Ollama",
-                    subtitle: "Free, offline, requires Ollama app",
+                    title: "💻 Ollama (Local)",
+                    subtitle: "Free, offline, requires Ollama app installed",
                     isSelected: settings.polishProvider == "ollama",
                     action: { settings.polishProvider = "ollama" }
                 )
@@ -130,11 +220,17 @@ struct OnboardingView: View {
                     Text("Anthropic API Key").font(.caption.bold())
                     SecureField("sk-ant-...", text: $settings.anthropicApiKey)
                         .textFieldStyle(.roundedBorder)
-                    Link("Get key at console.anthropic.com →",
-                         destination: URL(string: "https://console.anthropic.com/settings/keys")!)
-                        .font(.caption)
+                    HStack {
+                        Link("Get key →", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
+                            .font(.caption)
+                        Spacer()
+                        skipButton("Use local instead") {
+                            settings.polishProvider = "ollama"
+                            withAnimation { step += 1 }
+                        }
+                    }
                 }
-                .padding(.top, 8)
+                .padding(.top, 4)
             }
 
             Spacer()
@@ -142,13 +238,150 @@ struct OnboardingView: View {
         }
     }
 
+    // MARK: - Step 4b: Local Install
+
+    private var localInstallStep: some View {
+        VStack(spacing: 16) {
+            if !needsLocalInstall {
+                // Skip this step — auto-advance
+                Color.clear.onAppear {
+                    withAnimation { step += 1 }
+                }
+            } else {
+                stepHeader(icon: "arrow.down.circle", title: "Installing Local Mode",
+                           subtitle: "Setting up offline speech recognition and AI polishing")
+
+                Spacer()
+
+                switch localSetup.state {
+                case .idle:
+                    VStack(spacing: 12) {
+                        installRow(icon: "cpu", text: "Python environment", size: "~50 MB")
+                        if settings.sttProvider == "local" {
+                            installRow(icon: "mic.fill", text: "Whisper speech model", size: "~1.6 GB")
+                        }
+                        if settings.polishProvider == "ollama" {
+                            installRow(icon: "sparkles", text: "Ollama + language model", size: "~1.9 GB")
+                        }
+
+                        Text("This may take a few minutes depending on your internet speed.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        Task {
+                            await localSetup.setupLocalMode(
+                                needsSTT: settings.sttProvider == "local",
+                                needsPolish: settings.polishProvider == "ollama"
+                            )
+                        }
+                    } label: {
+                        Label("Install Now", systemImage: "arrow.down.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
+
+                    skipButton("Skip — use cloud mode instead") {
+                        settings.sttProvider = "groq"
+                        settings.polishProvider = "anthropic"
+                        withAnimation { step += 1 }
+                    }
+
+                case .installing(let stepText):
+                    VStack(spacing: 20) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text(stepText)
+                            .font(.subheadline.weight(.medium))
+                        Text("Please don't close the app during installation.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer()
+
+                case .done:
+                    VStack(spacing: 16) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 48))
+                            .foregroundStyle(.green)
+                        Text("Local mode installed!")
+                            .font(.title3.bold())
+                        Text("Everything is set up for fully offline dictation.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+                    nextButton()
+
+                case .error(let msg):
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 48))
+                            .foregroundStyle(.orange)
+                        Text("Installation issue")
+                            .font(.title3.bold())
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        Task {
+                            await localSetup.setupLocalMode(
+                                needsSTT: settings.sttProvider == "local",
+                                needsPolish: settings.polishProvider == "ollama"
+                            )
+                        }
+                    } label: {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
+
+                    skipButton("Switch to cloud mode") {
+                        settings.sttProvider = "groq"
+                        settings.polishProvider = "anthropic"
+                        withAnimation { step += 1 }
+                    }
+                }
+            }
+        }
+    }
+
+    private func installRow(icon: String, text: String, size: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(.blue)
+                .frame(width: 28)
+            Text(text)
+                .font(.subheadline)
+            Spacer()
+            Text(size)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    // MARK: - Step 5: Language
+
     private var languageStep: some View {
         VStack(spacing: 16) {
-            Label("Language", systemImage: "globe")
-                .font(.title2.bold())
-
-            Text("What language do you speak?")
-                .foregroundStyle(.secondary)
+            stepHeader(icon: "globe", title: "Language", subtitle: "Pick your primary language or let TalkIsCheap auto-detect")
 
             Spacer()
 
@@ -159,26 +392,131 @@ struct OnboardingView: View {
             }
             .pickerStyle(.radioGroup)
 
+            Text("You can switch languages anytime from Settings.\nTalkIsCheap also supports mixing languages mid-sentence.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+
             Spacer()
             nextButton()
         }
     }
 
-    private var doneStep: some View {
-        VStack(spacing: 20) {
+    // MARK: - Step 6: How to Dictate
+
+    private var howToDictateStep: some View {
+        VStack(spacing: 16) {
+            stepHeader(icon: "keyboard", title: "How to Dictate", subtitle: "Three ways to use your voice")
+
+            Spacer()
+
+            VStack(spacing: 14) {
+                hotkeyCard(
+                    keys: "Hold Hotkey",
+                    title: "Push-to-Talk",
+                    desc: "Hold the key, speak, release. Text appears at your cursor.",
+                    color: .blue
+                )
+
+                hotkeyCard(
+                    keys: "Hotkey + Shift",
+                    title: "Hands-Free Mode",
+                    desc: "Hold both keys to start, release when done. For longer dictation.",
+                    color: .purple
+                )
+
+                hotkeyCard(
+                    keys: "Double-tap",
+                    title: "Voice Search",
+                    desc: "Tap your hotkey twice, ask a question. AI searches the web and answers.",
+                    color: .orange
+                )
+            }
+
+            Spacer()
+            nextButton()
+        }
+    }
+
+    // MARK: - Step 7: Polish Modes
+
+    private var polishModesStep: some View {
+        VStack(spacing: 16) {
+            stepHeader(icon: "wand.and.stars", title: "Polish Modes", subtitle: "Choose how your text gets cleaned up")
+
+            Spacer()
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(PolishMode.builtIn) { mode in
+                    HStack(spacing: 8) {
+                        Text(mode.emoji).font(.title3)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(mode.label).font(.caption.bold())
+                            Text(modeDescription(mode.id)).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                    }
+                    .padding(8)
+                    .background(settings.activePolishMode == mode.id ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.05))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(settings.activePolishMode == mode.id ? Color.accentColor : .clear, lineWidth: 1.5)
+                    )
+                    .onTapGesture { settings.activePolishMode = mode.id }
+                }
+            }
+
+            VStack(spacing: 4) {
+                Text("Switch modes anytime from the menu bar.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Create unlimited custom modes in Settings → Scenarios.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer()
+            nextButton()
+        }
+    }
+
+    // MARK: - Step 8: Ready
+
+    private var readyStep: some View {
+        VStack(spacing: 16) {
+            Spacer()
+
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 64))
+                .font(.system(size: 72))
                 .foregroundStyle(.green)
+                .shadow(color: .green.opacity(0.3), radius: 20)
 
             Text("You're all set!")
                 .font(.system(size: 28, weight: .bold, design: .rounded))
 
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Hold **Control** to record", systemImage: "keyboard")
-                Label("Release to paste polished text", systemImage: "doc.on.clipboard")
-                Label("Click 🎤 in menu bar for settings", systemImage: "menubar.rectangle")
+            Text("Quick Reference")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+
+            VStack(alignment: .leading, spacing: 10) {
+                refRow(keys: "Hold Hotkey", action: "Dictate (push-to-talk)")
+                refRow(keys: "Hotkey+Shift", action: "Hands-free dictation")
+                refRow(keys: "2× Hotkey", action: "Voice Search")
+                refRow(keys: "Right-click file", action: "Transcribe & Summarize")
+                refRow(keys: "Menu bar icon", action: "Settings, modes, history")
             }
-            .font(.body)
+            .padding(16)
+            .background(Color.secondary.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            HStack(spacing: 4) {
+                Image(systemName: "gift").font(.caption)
+                Text("You have 50 free trial uses.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Spacer()
 
@@ -194,17 +532,139 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Helpers
+    // MARK: - Helper Components
+
+    private func stepHeader(icon: String, title: String, subtitle: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 36))
+                .foregroundStyle(.blue)
+            Text(title)
+                .font(.title2.bold())
+            Text(subtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    private func featureBullet(icon: String, text: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.body)
+                .foregroundStyle(.blue)
+                .frame(width: 24)
+            Text(text)
+                .font(.body)
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private func permissionCard(icon: String, title: String, desc: String, granted: Bool, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundStyle(granted ? .green : .blue)
+                .frame(width: 32)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.headline)
+                Text(desc).font(.caption).foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if granted {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.green)
+            } else {
+                Button("Grant") { action() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
+        }
+        .padding(14)
+        .background(granted ? Color.green.opacity(0.05) : Color.secondary.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(granted ? Color.green.opacity(0.3) : Color.clear, lineWidth: 1.5)
+        )
+    }
+
+    private func hotkeyCard(keys: String, title: String, desc: String, color: Color) -> some View {
+        HStack(spacing: 14) {
+            Text(keys)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(color.opacity(0.1))
+                .foregroundStyle(color)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .frame(width: 120)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.bold())
+                Text(desc).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.03))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func refRow(keys: String, action: String) -> some View {
+        HStack {
+            Text(keys)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.secondary.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .frame(width: 120, alignment: .leading)
+            Text(action)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+    }
+
+    private func modeDescription(_ id: String) -> String {
+        switch id {
+        case "raw": return "Exact transcription, no changes"
+        case "clean": return "Fix punctuation & filler words"
+        case "professional": return "Business communication"
+        case "marketing": return "Punchy, benefit-driven copy"
+        case "email": return "Structured email format"
+        case "coding": return "Technical documentation"
+        case "casual": return "Chat message style"
+        case "claude_prompt": return "Generate Claude AI prompts"
+        case "chatgpt_prompt": return "Generate ChatGPT prompts"
+        default: return ""
+        }
+    }
 
     private func nextButton(_ label: String = "Continue") -> some View {
         Button {
-            withAnimation { step += 1 }
+            withAnimation(.easeInOut(duration: 0.3)) { step += 1 }
         } label: {
             Text(label)
                 .frame(maxWidth: .infinity)
         }
         .controlSize(.large)
         .buttonStyle(.borderedProminent)
+    }
+
+    private func skipButton(_ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
     }
 
     private func providerCard(title: String, subtitle: String, isSelected: Bool, action: @escaping () -> Void) -> some View {

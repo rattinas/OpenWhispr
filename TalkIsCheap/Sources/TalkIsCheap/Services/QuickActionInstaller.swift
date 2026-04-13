@@ -5,29 +5,30 @@ enum QuickActionInstaller {
     private static let servicesDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Services")
 
-    /// Install Quick Actions if not already present
+    private static let workflowVersion = "2"  // bump to force reinstall on update
+
+    /// Install Quick Actions (reinstalls if version changed)
     static func installIfNeeded() {
         let fm = FileManager.default
         try? fm.createDirectory(at: servicesDir, withIntermediateDirectories: true)
 
-        installWorkflow(
-            name: "TalkIsCheap — Transcribe",
-            script: transcribeScript
-        )
-        installWorkflow(
-            name: "TalkIsCheap — Transcribe & Summarize",
-            script: transcribeSummarizeScript
-        )
+        let lastVersion = UserDefaults.standard.string(forKey: "quickActionVersion") ?? ""
+        let forceReinstall = lastVersion != workflowVersion
 
+        installWorkflow(name: "TalkIsCheap — Transcribe", script: transcribeScript, force: forceReinstall)
+        installWorkflow(name: "TalkIsCheap — Transcribe & Summarize", script: transcribeSummarizeScript, force: forceReinstall)
+
+        UserDefaults.standard.set(workflowVersion, forKey: "quickActionVersion")
         Log.write("Quick Actions installed to ~/Library/Services/")
     }
 
-    private static func installWorkflow(name: String, script: String) {
+    private static func installWorkflow(name: String, script: String, force: Bool) {
         let workflowDir = servicesDir.appendingPathComponent("\(name).workflow/Contents")
         let fm = FileManager.default
 
-        // Skip if already exists
-        if fm.fileExists(atPath: workflowDir.path) { return }
+        if fm.fileExists(atPath: workflowDir.path) && !force { return }
+        // Remove old version before reinstalling
+        try? fm.removeItem(at: servicesDir.appendingPathComponent("\(name).workflow"))
 
         try? fm.createDirectory(at: workflowDir, withIntermediateDirectories: true)
 
@@ -118,7 +119,7 @@ enum QuickActionInstaller {
                             <key>CheckedForUserDefaultShell</key>
                             <true/>
                             <key>inputMethod</key>
-                            <integer>1</integer>
+                            <integer>0</integer>
                             <key>shell</key>
                             <string>/bin/bash</string>
                             <key>source</key>
@@ -169,16 +170,18 @@ enum QuickActionInstaller {
         try? wflow.write(to: workflowDir.appendingPathComponent("document.wflow"), atomically: true, encoding: .utf8)
     }
 
-    // Shell scripts that open TalkIsCheap with the file path
+    // Shell scripts that open TalkIsCheap with the file path (URL-encoded for spaces/special chars)
     private static let transcribeScript = """
     for f in "$@"; do
-        open "talkischeap://transcribe?path=$f"
+        encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$f")
+        open "talkischeap://transcribe?path=$encoded"
     done
     """
 
     private static let transcribeSummarizeScript = """
     for f in "$@"; do
-        open "talkischeap://transcribe-summarize?path=$f"
+        encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$f")
+        open "talkischeap://transcribe-summarize?path=$encoded"
     done
     """
 }

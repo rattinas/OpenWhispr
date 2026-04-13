@@ -99,7 +99,7 @@ struct SearchResultView: View {
                 .frame(height: 80)
             Text("Listening...")
                 .font(.title3.weight(.medium))
-            Text("Ask anything — release Ctrl to search")
+            Text("Ask anything — release to search")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -194,7 +194,7 @@ struct SearchResultView: View {
                     }
 
                     // Answer text — rendered as Markdown
-                    if let md = try? AttributedString(markdown: result.answer, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+                    if let md = try? AttributedString(markdown: result.answer, options: .init(interpretedSyntax: .full)) {
                         Text(md)
                             .font(.system(size: 14))
                             .lineSpacing(6)

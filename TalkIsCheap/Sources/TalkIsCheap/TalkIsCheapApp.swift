@@ -47,17 +47,11 @@ final class StartupManager: ObservableObject {
     private func performStartup() {
         Log.write("=== STARTUP v2.0 ===")
 
-        // Permissions
+        // Permissions — only log status, don't prompt on every launch
+        // (permissions are requested during onboarding, not on startup)
         let accessibility = AXIsProcessTrusted()
         let mic = PermissionManager.micPermissionGranted
         Log.write("Accessibility: \(accessibility), Mic: \(mic)")
-
-        if !accessibility { PermissionManager.requestAccessibility() }
-        if !mic {
-            PermissionManager.requestMicPermission { granted in
-                Log.write("Mic permission: \(granted)")
-            }
-        }
 
         // Hotkey
         let hotkey = HotkeyManager.shared
@@ -70,6 +64,10 @@ final class StartupManager: ObservableObject {
             Task { @MainActor in
                 if AppState.shared.recorder.isRecording { AppState.shared.stopAndProcess() }
             }
+        }
+        hotkey.onCancel = {
+            Log.write("KEY CANCEL (short tap)")
+            Task { @MainActor in AppState.shared.cancelRecording() }
         }
         hotkey.onSearchKeyDown = {
             Log.write("SEARCH KEY DOWN")
@@ -93,9 +91,67 @@ final class StartupManager: ObservableObject {
         Log.write("Ready!")
 
         UpdateChecker.shared.checkForUpdate()
+        checkLicenseValidation()
+
+        // Auto-start Ollama if local polish mode is selected
+        if AppSettings.shared.polishProvider == "ollama" {
+            Task {
+                if !(await LocalSetupService.shared.isOllamaRunning()) {
+                    Log.write("Auto-starting Ollama...")
+                    LocalSetupService.shared.startOllamaDaemon()
+                }
+            }
+        }
 
         if !AppSettings.shared.hasCompletedOnboarding {
-            AppState.shared.showOnboarding = true
+            showOnboardingPanel()
+        }
+    }
+
+    private var onboardingPanel: NSPanel?
+
+    private func showOnboardingPanel() {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 520),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: true
+        )
+        panel.title = "TalkIsCheap Setup"
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.contentView = NSHostingView(rootView: OnboardingView())
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        onboardingPanel = panel
+        Log.write("Onboarding panel shown")
+    }
+
+    private func checkLicenseValidation() {
+        guard LicenseManager.isLicensed else { return }
+
+        let lastCheck = AppSettings.shared.lastValidationCheck
+        let now = Date().timeIntervalSince1970
+        let sevenDays: Double = 7 * 86400
+
+        guard now - lastCheck > sevenDays else { return }
+
+        Task {
+            let valid = await LicenseManager.validateOnline()
+            if let valid {
+                if valid {
+                    AppSettings.shared.lastValidationCheck = now
+                    Log.write("License validation: OK")
+                } else {
+                    Log.write("License validation: INVALID — clearing activation")
+                    AppSettings.shared.activationToken = ""
+                    AppSettings.shared.activatedAt = ""
+                }
+            } else {
+                Log.write("License validation: network unreachable, skipping")
+            }
         }
     }
 
@@ -111,6 +167,11 @@ final class StartupManager: ObservableObject {
     }
 
     @objc func handleURL(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
+        guard LicenseManager.canUse else {
+            Log.write("URL handler blocked: trial expired")
+            return
+        }
+
         guard let urlString = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
               let url = URL(string: urlString)
         else { return }

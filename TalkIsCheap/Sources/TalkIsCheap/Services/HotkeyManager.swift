@@ -8,6 +8,7 @@ final class HotkeyManager {
 
     var onKeyDown: (() -> Void)?
     var onKeyUp: (() -> Void)?
+    var onCancel: (() -> Void)?  // called on short tap to silently cancel recording
     var onHandsFreeToggle: (() -> Void)?
 
     // Search hotkey (Ctrl+Cmd)
@@ -186,11 +187,12 @@ final class HotkeyManager {
     // 1. Long hold (>0.3s) → push-to-talk dictation (start on press, stop on release)
     // 2. Double-tap (<0.4s between taps) → voice search
     //
-    // Solution: On press, DON'T start recording immediately. Wait to see if it's a
-    // long hold (start dictation after 0.3s) or a quick tap (potential double-tap).
+    // Solution: Start dictation IMMEDIATELY on press (zero latency for hold).
+    // On quick release (<0.3s), cancel dictation (too short for meaningful audio)
+    // and remember the tap time for double-tap detection.
 
-    private var holdTimer: DispatchWorkItem?
-    private let holdThreshold: TimeInterval = 0.3  // if held longer than this → dictation
+    private var dictationStarted = false
+    private let holdThreshold: TimeInterval = 0.3  // releases shorter than this = tap, not dictation
 
     private func handleControlEvent(pressed: Bool, isOtherKey: Bool) {
         if isOtherKey && controlIsDown {
@@ -203,13 +205,12 @@ final class HotkeyManager {
         if pressed && !controlIsDown {
             controlIsDown = true
             otherKeyPressed = false
+            dictationStarted = false
             pushStartTime = now
 
             // Check if this is a double-tap (second press within window)
             if now - lastCtrlReleaseTime < doubleTapWindow && lastCtrlReleaseTime > 0 {
                 // DOUBLE TAP → Voice Search mode
-                holdTimer?.cancel()
-                holdTimer = nil
                 isSearchRecording = true
                 lastCtrlReleaseTime = 0
                 Log.write("SEARCH: START (double-tap) — hold and speak, release to search")
@@ -217,14 +218,10 @@ final class HotkeyManager {
                 return
             }
 
-            // Schedule dictation start after hold threshold
-            let timer = DispatchWorkItem { [weak self] in
-                guard let self, self.controlIsDown else { return }
-                Log.write("DICTATION: START (hold)")
-                DispatchQueue.main.async { self.onKeyDown?() }
-            }
-            holdTimer = timer
-            DispatchQueue.main.asyncAfter(deadline: .now() + holdThreshold, execute: timer)
+            // Start dictation IMMEDIATELY — no delay
+            dictationStarted = true
+            Log.write("DICTATION: START (hold)")
+            DispatchQueue.main.async { [weak self] in self?.onKeyDown?() }
 
         } else if !pressed && controlIsDown {
             controlIsDown = false
@@ -238,23 +235,30 @@ final class HotkeyManager {
             }
 
             if otherKeyPressed {
-                holdTimer?.cancel()
-                holdTimer = nil
+                if dictationStarted {
+                    // Cancel dictation — user pressed Ctrl+<other key> (e.g. Ctrl+C)
+                    dictationStarted = false
+                    Log.write("DICTATION: CANCEL (other key pressed)")
+                    DispatchQueue.main.async { [weak self] in self?.onCancel?() }
+                }
                 return
             }
 
             let holdDuration = now - pushStartTime
 
             if holdDuration < holdThreshold {
-                // Short tap — cancel dictation timer, remember for potential double-tap
-                holdTimer?.cancel()
-                holdTimer = nil
+                // Short tap — cancel dictation silently, remember for potential double-tap
+                if dictationStarted {
+                    dictationStarted = false
+                    Log.write("DICTATION: CANCEL (short tap \(String(format: "%.0f", holdDuration * 1000))ms)")
+                    DispatchQueue.main.async { [weak self] in self?.onCancel?() }
+                }
                 lastCtrlReleaseTime = now
             } else {
-                // Long hold release → stop dictation
-                holdTimer?.cancel()
-                holdTimer = nil
+                // Long hold release → stop dictation normally
+                dictationStarted = false
                 lastCtrlReleaseTime = 0
+                Log.write("DICTATION: STOP (hold released)")
                 DispatchQueue.main.async { [weak self] in self?.onKeyUp?() }
             }
         }

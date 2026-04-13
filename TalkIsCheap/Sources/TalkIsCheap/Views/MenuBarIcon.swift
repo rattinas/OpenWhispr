@@ -40,14 +40,6 @@ struct MenuBarIcon: View {
             }
         }
 
-        // Fallback: try absolute path (development)
-        let devPath = "/Users/bene/Documents/Projekte/OpenWhispr/TalkIsCheap/Resources/cassetteTemplate.png"
-        if let img = NSImage(contentsOfFile: devPath) {
-            img.isTemplate = true
-            img.size = NSSize(width: 18, height: 18)
-            return img
-        }
-
         return nil
     }
 }

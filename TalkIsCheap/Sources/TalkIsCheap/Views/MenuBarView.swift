@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MenuBarView: View {
     @ObservedObject var state = AppState.shared
@@ -67,28 +68,51 @@ struct MenuBarView: View {
 
             Divider()
 
-            // Voice Search hint
-            HStack(spacing: 4) {
-                Image(systemName: "magnifyingglass").font(.system(size: 9))
-                Text("Voice Search: double-tap Ctrl").font(.system(size: 10))
+            // Voice Search hint / Trial expired warning
+            if !LicenseManager.canUse {
+                VStack(spacing: 6) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle").font(.system(size: 9))
+                        Text("Trial expired").font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(.orange)
+
+                    Button {
+                        NSWorkspace.shared.open(URL(string: "https://talkischeap.app/checkout")!)
+                    } label: {
+                        Label("Buy License — $19", systemImage: "cart")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+            } else {
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 9))
+                    Text("Voice Search: double-tap your hotkey").font(.system(size: 10))
+                }
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 12).padding(.vertical, 4)
             }
-            .foregroundStyle(.tertiary)
-            .padding(.horizontal, 12).padding(.vertical, 4)
 
             Divider()
 
             Button {
                 let panel = NSOpenPanel()
-                panel.allowedContentTypes = [.audio, .movie, .mpeg4Audio, .mpeg4Movie, .wav, .mp3]
+                panel.allowedContentTypes = [.audio, .movie, .mpeg4Audio, .mpeg4Movie, .wav, .mp3, .pdf,
+                                              .init(filenameExtension: "docx")!]
                 panel.allowsMultipleSelection = false
                 panel.canChooseDirectories = false
-                panel.title = "Choose audio or video file"
+                panel.title = "Choose audio, video, PDF, or Word file"
                 if panel.runModal() == .OK, let url = panel.url {
                     FileTranscriptionManager.shared.processFile(path: url.path)
                 }
             } label: {
-                Label("Transcribe File...", systemImage: "doc.badge.waveform")
+                Label("Open File...", systemImage: "doc.badge.waveform")
             }
+            .disabled(!LicenseManager.canUse)
             .padding(.horizontal, 8).padding(.vertical, 4)
 
             Button {
@@ -141,7 +165,17 @@ struct MenuBarView: View {
                 Divider()
             }
 
-            // Cassette toggle
+            // Toggles
+            Toggle(isOn: $settings.dimAudioWhileRecording) {
+                Label("Dim audio while recording", systemImage: "speaker.wave.2")
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+
+            Toggle(isOn: $settings.appAwareContext) {
+                Label("App-aware context", systemImage: "app.badge.checkmark")
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+
             Toggle(isOn: Binding(
                 get: { EqualizerOverlay.shared.isEnabled },
                 set: { EqualizerOverlay.shared.isEnabled = $0 }

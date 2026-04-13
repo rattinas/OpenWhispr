@@ -17,6 +17,13 @@ final class FileTranscriptionManager: ObservableObject {
     private var panel: NSPanel?
 
     func processFile(path: String) {
+        guard LicenseManager.canUse else {
+            state = .ready(transcript: "", summary: "Trial expired — enter license key in Settings to continue.", filePath: path)
+            SoundFeedback.error()
+            show()
+            return
+        }
+
         let fileName = URL(fileURLWithPath: path).lastPathComponent
         state = .transcribing(fileName: fileName)
         chatMessages = []
@@ -47,6 +54,7 @@ final class FileTranscriptionManager: ObservableObject {
     }
 
     func askQuestion(_ question: String) {
+        guard LicenseManager.canUse else { return }
         guard !currentTranscript.isEmpty else { return }
         chatMessages.append((role: "user", text: question))
 
@@ -205,7 +213,7 @@ struct FileTranscriptionView: View {
     private func summaryTab(_ summary: String) -> some View {
         VStack(spacing: 0) {
             ScrollView {
-                if let md = try? AttributedString(markdown: summary, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+                if let md = try? AttributedString(markdown: summary, options: .init(interpretedSyntax: .full)) {
                     Text(md)
                         .font(.system(size: 13))
                         .lineSpacing(5)
@@ -255,7 +263,7 @@ struct FileTranscriptionView: View {
                                 .foregroundStyle(msg.role == "user" ? .blue : .orange)
                                 .frame(width: 20)
 
-                            if let md = try? AttributedString(markdown: msg.text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+                            if let md = try? AttributedString(markdown: msg.text, options: .init(interpretedSyntax: .full)) {
                                 Text(md)
                                     .font(.system(size: 13))
                                     .textSelection(.enabled)

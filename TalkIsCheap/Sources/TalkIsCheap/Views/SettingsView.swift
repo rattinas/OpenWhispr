@@ -51,7 +51,7 @@ struct SettingsView: View {
             Section("Voice Search") {
                 Picker("AI Model", selection: $settings.searchModel) {
                     Text("Claude Opus 4.6 (best, slower)").tag("claude-opus-4-6")
-                    Text("Claude Sonnet 4.5 (fast, recommended)").tag("claude-sonnet-4-6")
+                    Text("Claude Sonnet 4.6 (fast, recommended)").tag("claude-sonnet-4-6")
                     Text("Claude Haiku 4.5 (fastest, cheapest)").tag("claude-haiku-4-5-20251001")
                 }
                 Picker("Response Depth", selection: $settings.searchDepth) {
@@ -118,13 +118,13 @@ struct SettingsView: View {
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Dictation").font(.caption.bold())
-                    Label("**Hold Ctrl** → record → release → paste", systemImage: "hand.tap")
-                    Label("**Hold Ctrl+Shift** → hands-free dictation", systemImage: "hand.tap.fill")
+                    Label("**Hold** your hotkey → record → release → paste", systemImage: "hand.tap")
+                    Label("**Hold** hotkey **+ Shift** → hands-free dictation", systemImage: "hand.tap.fill")
 
                     Divider().padding(.vertical, 4)
 
                     Text("Voice Search").font(.caption.bold())
-                    Label("**Double-tap Ctrl** → ask anything → tap Ctrl to stop", systemImage: "magnifyingglass")
+                    Label("**Double-tap** your hotkey → ask anything", systemImage: "magnifyingglass")
                     Text("Requires Brave Search API key (free)")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
@@ -202,7 +202,7 @@ struct SettingsView: View {
             } header: {
                 Text("Brave Search (Voice Search)")
             } footer: {
-                Text("Free tier: 2000 searches/month. Hold Ctrl+Cmd to ask anything.")
+                Text("Free tier: 2000 searches/month. Double-tap your hotkey to ask anything.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -254,6 +254,9 @@ struct SettingsView: View {
     // MARK: - License
 
     @State private var licenseInput = ""
+    @State private var isActivating = false
+    @State private var activationMessage: (text: String, isError: Bool)?
+    @State private var isDeactivating = false
 
     private var licenseTab: some View {
         Form {
@@ -263,10 +266,10 @@ struct SettingsView: View {
                         Image(systemName: "checkmark.seal.fill").foregroundStyle(.green).font(.title2)
                         VStack(alignment: .leading) {
                             Text("Licensed").font(.headline)
-                            Text("Lifetime access activated").font(.caption).foregroundStyle(.secondary)
+                            Text("Activated on this Mac").font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                } else {
+                } else if settings.remainingTrial > 0 {
                     HStack {
                         Image(systemName: "clock.fill").foregroundStyle(.orange).font(.title2)
                         VStack(alignment: .leading) {
@@ -275,20 +278,111 @@ struct SettingsView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                } else {
+                    VStack(spacing: 12) {
+                        HStack {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.red).font(.title2)
+                            VStack(alignment: .leading) {
+                                Text("Trial Expired").font(.headline)
+                                Text("Purchase a license to continue using TalkIsCheap")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Button {
+                            NSWorkspace.shared.open(URL(string: "https://talkischeap.app/checkout")!)
+                        } label: {
+                            Label("Buy License — $19 Lifetime", systemImage: "cart.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .controlSize(.large)
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
+                    }
                 }
             }
 
-            Section("Enter License Key") {
-                TextField("TIC-XXXXX-XXXXX-XXXXX-XXXXX", text: $licenseInput)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                Button("Activate") {
-                    if LicenseManager.validate(licenseInput.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                        settings.licenseKey = licenseInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                        licenseInput = ""
+            if !LicenseManager.isLicensed {
+                Section("Activate License") {
+                    TextField("TIC-XXXXX-XXXXX-XXXXX-XXXXX", text: $licenseInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .disabled(isActivating)
+
+                    Button {
+                        isActivating = true
+                        activationMessage = nil
+                        Task {
+                            let result = await LicenseManager.activate(key: licenseInput)
+                            isActivating = false
+                            switch result {
+                            case .success:
+                                activationMessage = ("License activated!", false)
+                                licenseInput = ""
+                            case .alreadyActivated:
+                                activationMessage = ("License re-activated!", false)
+                                licenseInput = ""
+                            case .invalidKey:
+                                activationMessage = ("Invalid license key.", true)
+                            case .maxReached(let msg):
+                                activationMessage = (msg, true)
+                            case .revoked:
+                                activationMessage = ("This license has been revoked.", true)
+                            case .networkError(let msg):
+                                activationMessage = ("Connection error: \(msg)", true)
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            if isActivating {
+                                ProgressView().scaleEffect(0.6)
+                            }
+                            Text(isActivating ? "Activating..." : "Activate")
+                        }
+                    }
+                    .disabled(licenseInput.isEmpty || isActivating)
+
+                    if let msg = activationMessage {
+                        Text(msg.text)
+                            .font(.caption)
+                            .foregroundStyle(msg.isError ? .red : .green)
                     }
                 }
-                .disabled(licenseInput.isEmpty)
+            } else {
+                Section("Manage License") {
+                    HStack {
+                        Text("Key")
+                        Spacer()
+                        Text(settings.licenseKey).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Machine ID")
+                        Spacer()
+                        Text(LicenseManager.hardwareUUID().prefix(8) + "...").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+
+                    Button(role: .destructive) {
+                        isDeactivating = true
+                        Task {
+                            let success = await LicenseManager.deactivate()
+                            isDeactivating = false
+                            if !success {
+                                activationMessage = ("Failed to deactivate. Check your internet connection.", true)
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            if isDeactivating {
+                                ProgressView().scaleEffect(0.6)
+                            }
+                            Text(isDeactivating ? "Deactivating..." : "Deactivate this Mac")
+                        }
+                    }
+                    .disabled(isDeactivating)
+
+                    if let msg = activationMessage, msg.isError {
+                        Text(msg.text).font(.caption).foregroundStyle(.red)
+                    }
+                }
             }
         }
         .formStyle(.grouped)

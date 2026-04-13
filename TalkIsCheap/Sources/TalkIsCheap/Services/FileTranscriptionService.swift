@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import PDFKit
 
 final class FileTranscriptionService {
     static let shared = FileTranscriptionService()
@@ -7,11 +8,22 @@ final class FileTranscriptionService {
     private let maxChunkSize = 24 * 1024 * 1024
     private let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("talkischeap")
 
+    /// File extensions that contain text (no audio transcription needed)
+    private let documentExtensions = ["pdf", "docx"]
+
     // MARK: - Main pipeline
 
     func transcribe(filePath: String) async throws -> String {
         Log.write("FileTranscription: \(filePath)")
 
+        let ext = URL(fileURLWithPath: filePath).pathExtension.lowercased()
+
+        // Document files: extract text directly
+        if documentExtensions.contains(ext) {
+            return try extractText(filePath: filePath, ext: ext)
+        }
+
+        // Audio/video files: transcribe via STT
         let fm = FileManager.default
         try? fm.createDirectory(at: tmpDir, withIntermediateDirectories: true)
 
@@ -39,6 +51,73 @@ final class FileTranscriptionService {
 
         cleanup()
         return transcript
+    }
+
+    // MARK: - Document text extraction
+
+    private func extractText(filePath: String, ext: String) throws -> String {
+        switch ext {
+        case "pdf":
+            return try extractPDFText(filePath: filePath)
+        case "docx":
+            return try extractDocxText(filePath: filePath)
+        default:
+            throw FileTranscriptionError.unsupportedFormat
+        }
+    }
+
+    private func extractPDFText(filePath: String) throws -> String {
+        guard let doc = PDFDocument(url: URL(fileURLWithPath: filePath)) else {
+            throw FileTranscriptionError.unsupportedFormat
+        }
+        var text = ""
+        for i in 0..<doc.pageCount {
+            if let page = doc.page(at: i), let pageText = page.string {
+                text += pageText + "\n"
+            }
+        }
+        Log.write("PDF extracted: \(text.count) chars, \(doc.pageCount) pages")
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FileTranscriptionError.apiError("PDF contains no extractable text (scanned/image-only PDF)")
+        }
+        return text
+    }
+
+    private func extractDocxText(filePath: String) throws -> String {
+        // .docx is a ZIP containing XML files. The main content is in word/document.xml
+        let fileURL = URL(fileURLWithPath: filePath)
+        let tmpExtract = tmpDir.appendingPathComponent("docx_extract")
+        let fm = FileManager.default
+        try? fm.removeItem(at: tmpExtract)
+        try fm.createDirectory(at: tmpExtract, withIntermediateDirectories: true)
+
+        // Unzip
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        unzip.arguments = ["-o", fileURL.path, "-d", tmpExtract.path]
+        unzip.standardOutput = FileHandle.nullDevice
+        unzip.standardError = FileHandle.nullDevice
+        try unzip.run()
+        unzip.waitUntilExit()
+
+        let docXML = tmpExtract.appendingPathComponent("word/document.xml")
+        guard fm.fileExists(atPath: docXML.path) else {
+            throw FileTranscriptionError.unsupportedFormat
+        }
+
+        let xmlData = try Data(contentsOf: docXML)
+        let parser = DocxXMLParser()
+        let xmlParser = XMLParser(data: xmlData)
+        xmlParser.delegate = parser
+        xmlParser.parse()
+
+        try? fm.removeItem(at: tmpExtract)
+
+        Log.write("DOCX extracted: \(parser.text.count) chars")
+        guard !parser.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FileTranscriptionError.apiError("DOCX contains no text")
+        }
+        return parser.text
     }
 
     // MARK: - FFmpeg extract & compress
@@ -343,6 +422,33 @@ enum FileTranscriptionError: LocalizedError {
         case .apiError(let msg): return "API: \(msg)"
         case .ffmpegFailed: return "ffmpeg failed — brew install ffmpeg"
         case .unsupportedFormat: return "Unsupported format"
+        }
+    }
+}
+
+// MARK: - DOCX XML Parser
+
+/// Extracts text content from word/document.xml (OOXML format)
+private class DocxXMLParser: NSObject, XMLParserDelegate {
+    var text = ""
+    private var inTextElement = false
+    private var inParagraph = false
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
+        // w:t = text run, w:p = paragraph
+        if elementName == "w:t" { inTextElement = true }
+        if elementName == "w:p" { inParagraph = true }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if inTextElement { text += string }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) {
+        if elementName == "w:t" { inTextElement = false }
+        if elementName == "w:p" {
+            inParagraph = false
+            text += "\n"
         }
     }
 }
