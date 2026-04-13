@@ -443,6 +443,19 @@ namespace TalkIsCheap.Views
             ContentPanel.Children.Add(border);
 
             AddSpacer(8);
+
+            // Autostart checkbox
+            var autostartCheck = new System.Windows.Controls.CheckBox
+            {
+                Content = "Start TalkIsCheap when Windows starts (recommended)",
+                IsChecked = true,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 4, 0, 4)
+            };
+            autostartCheck.Tag = "autostart";
+            ContentPanel.Children.Add(autostartCheck);
+
+            AddSpacer(4);
             AddCenteredText("You have 50 free trial uses.", 11, FontWeights.Normal, Brushes.Gray);
 
             NextButton.Content = "Start Using TalkIsCheap";
@@ -452,6 +465,16 @@ namespace TalkIsCheap.Views
         {
             if (_step >= TotalSteps - 1)
             {
+                // Check autostart checkbox
+                foreach (var child in ContentPanel.Children)
+                {
+                    if (child is System.Windows.Controls.CheckBox cb && cb.Tag as string == "autostart")
+                    {
+                        if (cb.IsChecked == true)
+                            Services.AutostartManager.Enable();
+                    }
+                }
+
                 _settings.HasCompletedOnboarding = true;
                 _settings.Save();
                 Close();

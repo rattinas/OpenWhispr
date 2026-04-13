@@ -1,0 +1,48 @@
+name: Build Windows Installer
+
+on:
+  push:
+    tags:
+      - 'v*-windows'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET 8
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Publish app
+      run: |
+        cd TalkIsCheap-Windows/TalkIsCheap
+        dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o dist
+
+    - name: Install Inno Setup
+      run: choco install innosetup -y
+
+    - name: Build installer
+      run: |
+        cd TalkIsCheap-Windows
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: TalkIsCheap-Windows
+        path: |
+          TalkIsCheap-Windows/output/TalkIsCheap-Setup.exe
+          TalkIsCheap-Windows/TalkIsCheap/dist/TalkIsCheap.exe
+
+    - name: Upload to Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          TalkIsCheap-Windows/output/TalkIsCheap-Setup.exe
+          TalkIsCheap-Windows/TalkIsCheap/dist/TalkIsCheap.exe

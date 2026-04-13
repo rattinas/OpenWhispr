@@ -333,6 +333,16 @@ namespace TalkIsCheap
             appAwareToggle.Unchecked += (s, e) => { _settings.AppAwareContext = false; _settings.Save(); };
             menu.Items.Add(appAwareToggle);
 
+            var autostartToggle = new MenuItem
+            {
+                Header = "Start with Windows",
+                IsChecked = AutostartManager.IsEnabled,
+                IsCheckable = true
+            };
+            autostartToggle.Checked += (s, e) => AutostartManager.Enable();
+            autostartToggle.Unchecked += (s, e) => AutostartManager.Disable();
+            menu.Items.Add(autostartToggle);
+
             menu.Items.Add(new Separator());
 
             // Provider info
