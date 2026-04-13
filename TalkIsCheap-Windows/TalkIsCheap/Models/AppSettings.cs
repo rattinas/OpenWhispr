@@ -47,7 +47,7 @@ namespace TalkIsCheap.Models
 
         // Local Whisper
         [JsonProperty("whisperModel")]
-        public string WhisperModel { get; set; } = "base";
+        public string WhisperModel { get; set; } = "large-v3-turbo";
 
         // Language
         [JsonProperty("language")]

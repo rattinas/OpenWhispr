@@ -38,7 +38,7 @@ namespace TalkIsCheap.Services
 
         // whisper.cpp release binary (Windows x64)
         private const string BinaryUrl =
-            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.7.3/whisper-bin-x64.zip";
+            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.8.4/whisper-bin-x64.zip";
 
         // Model URLs from HuggingFace
         private static string ModelUrl(string model) =>
