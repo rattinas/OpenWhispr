@@ -105,22 +105,33 @@ final class AppState: ObservableObject {
         AudioDimmer.shared.dim()
         SoundFeedback.recordStart()
 
-        // Progressive transcription: send first 3s chunk to Groq while still recording
+        // Progressive pipeline: transcribe + polish the first 3s WHILE user still speaks.
+        // When user releases, if this is done → paste IMMEDIATELY. Zero wait time.
         progressiveTask = nil
         progressiveResult = nil
+        progressivePolished = nil
         recorder.onChunkReady = { [weak self] chunkWav in
             guard let self else { return }
-            Log.write("Progressive: sending first chunk...")
+            let modeName = self.appAwareMode() ?? self.settings.activePolishMode
+            let mode = self.modeManager.allModes.first { $0.id == modeName } ?? PolishMode.builtIn[1]
+            let lang = self.settings.language == "auto" ? nil : self.settings.language
+            let dict = self.settings.customDictionary
+
+            Log.write("Progressive: transcribing + polishing first chunk...")
             self.progressiveTask = Task {
                 do {
-                    let text = try await TranscriberService.shared.transcribe(
-                        wavData: chunkWav,
-                        language: self.settings.language == "auto" ? nil : self.settings.language
-                    )
-                    self.progressiveResult = text
-                    Log.write("Progressive result ready: \(text.prefix(40))...")
+                    // Step 1: Transcribe first 3 seconds
+                    let rawText = try await TranscriberService.shared.transcribe(wavData: chunkWav, language: lang)
+                    guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                    self.progressiveResult = rawText
+                    Log.write("Progressive transcribed: \(rawText.prefix(40))...")
+
+                    // Step 2: Polish immediately (don't wait for user to release!)
+                    let polished = try await PolisherService.shared.polish(text: rawText, mode: mode)
+                    self.progressivePolished = polished
+                    Log.write("Progressive polished: \(polished.prefix(40))... ✅ READY TO PASTE")
                 } catch {
-                    Log.write("Progressive transcription failed: \(error)")
+                    Log.write("Progressive pipeline failed: \(error)")
                 }
             }
         }
@@ -132,6 +143,7 @@ final class AppState: ObservableObject {
 
     private var progressiveTask: Task<Void, Never>?
     private var progressiveResult: String?
+    private var progressivePolished: String?
 
     func cancelRecording() {
         guard case .recording = status else { return }
@@ -139,6 +151,7 @@ final class AppState: ObservableObject {
         progressiveTask?.cancel()
         progressiveTask = nil
         progressiveResult = nil
+        progressivePolished = nil
         _ = recorder.stop()
         AudioDimmer.shared.restore()
         status = .ready
@@ -162,40 +175,51 @@ final class AppState: ObservableObject {
     private func process(wavData: Data) async {
         let startTime = Date()
         let modeName = appAwareMode() ?? settings.activePolishMode
+        let wavBytes = wavData.count
+        let approxSeconds = Double(wavBytes) / (16000 * 4)
 
         do {
-            // Check if progressive transcription already has a result
-            let hasProgressiveResult = progressiveResult != nil && !(progressiveResult?.isEmpty ?? true)
+            // ⚡ FAST PATH: If progressive pipeline already polished the text → paste IMMEDIATELY
+            if let polished = progressivePolished, !polished.isEmpty, approxSeconds <= 5.0 {
+                let rawText = progressiveResult ?? polished
+                Log.write("⚡ INSTANT PASTE (progressive pipeline ready, \(String(format: "%.1f", approxSeconds))s)")
 
-            let rawText: String
-            if hasProgressiveResult {
-                // Short recording (<5s): progressive result is likely the full transcription
-                // Long recording: still transcribe the full audio for accuracy
-                let wavBytes = wavData.count
-                let approxSeconds = Double(wavBytes) / (16000 * 4) // 16kHz * 4 bytes per float32
+                PasteService.paste(polished)
 
-                if approxSeconds <= 5.0 {
-                    // Short — use progressive result directly (saves ~800ms)
-                    rawText = progressiveResult!
-                    Log.write("Using progressive result (short \(String(format: "%.1f", approxSeconds))s)")
-                } else {
-                    // Long — transcribe full audio for best accuracy
-                    Log.write("Transcribing full audio (\(String(format: "%.1f", approxSeconds))s)...")
-                    rawText = try await TranscriberService.shared.transcribe(
-                        wavData: wavData,
-                        language: settings.language == "auto" ? nil : settings.language
-                    )
+                let duration = Date().timeIntervalSince(startTime)
+                let wordCount = polished.split(separator: " ").count
+                history.add(raw: rawText, polished: polished, mode: modeName, duration: duration)
+                if !LicenseManager.isLicensed && settings.tier != "pro_monthly" && settings.tier != "pro_annual" {
+                    settings.trialUses += 1
                 }
-            } else {
-                // No progressive result — normal path
-                Log.write("Transcribing...")
-                rawText = try await TranscriberService.shared.transcribe(
-                    wavData: wavData,
-                    language: settings.language == "auto" ? nil : settings.language
-                )
+                SoundFeedback.done()
+                status = .done(wordCount: wordCount, duration: duration)
+                Log.write("Done: \(wordCount)w in \(String(format: "%.2f", duration))s (instant!)")
+                hideOverlayAfterDelay()
+
+                progressiveTask = nil
+                progressiveResult = nil
+                progressivePolished = nil
+                return
             }
+
+            // ⚡ PROGRESSIVE PATH: For long recordings (>5s), paste first chunk NOW, then replace with full version
+            if let earlyPolished = progressivePolished, !earlyPolished.isEmpty, approxSeconds > 5.0 {
+                Log.write("⚡ PROGRESSIVE: pasting first chunk immediately, full version coming...")
+                PasteService.paste(earlyPolished)
+                SoundFeedback.done()
+                status = .polishing // Show "polishing" while we process the rest
+            }
+
+            // Transcribe full audio for accuracy
+            Log.write("Transcribing full \(String(format: "%.1f", approxSeconds))s...")
+            let rawText = try await TranscriberService.shared.transcribe(
+                wavData: wavData,
+                language: settings.language == "auto" ? nil : settings.language
+            )
             progressiveTask = nil
             progressiveResult = nil
+            progressivePolished = nil
             Log.write("RAW: \(rawText.prefix(80))...")
 
             guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
