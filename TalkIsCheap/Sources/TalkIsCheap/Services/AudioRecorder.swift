@@ -8,24 +8,29 @@ final class AudioRecorder: ObservableObject {
     private var audioData = Data()
     private let targetSampleRate: Double = 16000
 
+    /// Callback fired every `chunkInterval` seconds with the WAV data so far.
+    /// Used for progressive transcription (Spotify-style pre-loading).
+    var onChunkReady: ((Data) -> Void)?
+    private var chunkTimer: Timer?
+    private let chunkInterval: TimeInterval = 3.0 // fire first chunk after 3s
+    private var chunkFired = false
+
     func start() {
         Log.write("AudioRecorder.start()")
         audioData = Data()
+        chunkFired = false
 
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
 
-        // Use the input node's NATIVE format — don't force a custom one
         let nativeFormat = inputNode.outputFormat(forBus: 0)
         Log.write("Native format: \(nativeFormat.sampleRate)Hz, \(nativeFormat.channelCount)ch")
 
-        // Target format: 16kHz mono float32 for Whisper
         guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: targetSampleRate, channels: 1, interleaved: false) else {
             Log.write("Failed to create target format")
             return
         }
 
-        // Create converter from native → 16kHz mono
         guard let converter = AVAudioConverter(from: nativeFormat, to: targetFormat) else {
             Log.write("Failed to create audio converter")
             return
@@ -34,7 +39,6 @@ final class AudioRecorder: ObservableObject {
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { [weak self] buffer, _ in
             guard let self else { return }
 
-            // Calculate output frame count
             let ratio = self.targetSampleRate / nativeFormat.sampleRate
             let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
             guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputFrameCount) else { return }
@@ -62,17 +66,35 @@ final class AudioRecorder: ObservableObject {
             self.audioEngine = engine
             isRecording = true
             Log.write("AudioEngine started OK")
+
+            // Schedule first chunk callback after 3 seconds
+            DispatchQueue.main.async { [weak self] in
+                self?.chunkTimer = Timer.scheduledTimer(withTimeInterval: self?.chunkInterval ?? 3.0, repeats: false) { [weak self] _ in
+                    guard let self, self.isRecording, !self.chunkFired else { return }
+                    self.chunkFired = true
+                    let wav = self.createWAV(from: self.audioData, sampleRate: self.targetSampleRate)
+                    Log.write("Chunk ready: \(wav.count) bytes (progressive)")
+                    self.onChunkReady?(wav)
+                }
+            }
         } catch {
             Log.write("AudioEngine start FAILED: \(error)")
         }
     }
 
     func stop() -> Data {
+        chunkTimer?.invalidate()
+        chunkTimer = nil
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
         isRecording = false
         Log.write("AudioRecorder stopped, pcm bytes: \(audioData.count)")
+        return createWAV(from: audioData, sampleRate: targetSampleRate)
+    }
+
+    /// Get current WAV snapshot without stopping
+    func currentWAV() -> Data {
         return createWAV(from: audioData, sampleRate: targetSampleRate)
     }
 

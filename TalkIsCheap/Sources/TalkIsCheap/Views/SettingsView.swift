@@ -15,7 +15,9 @@ struct SettingsView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             generalTab.tabItem { Label("General", systemImage: "gear") }.tag("general")
-            apiKeysTab.tabItem { Label("API Keys", systemImage: "key") }.tag("keys")
+            if !settings.shouldUseProxy {
+                apiKeysTab.tabItem { Label("API Keys", systemImage: "key") }.tag("keys")
+            }
             DictionaryView().tabItem { Label("Dictionary", systemImage: "book") }.tag("dictionary")
             modesTab.tabItem { Label("Modes", systemImage: "sparkles") }.tag("modes")
             licenseTab.tabItem { Label("License", systemImage: "lock.shield") }.tag("license")

@@ -21,7 +21,7 @@ struct PaywallView: View {
                 // Pro Monthly — hero option
                 optionButton(
                     title: "Pro Monthly — $9.99/mo",
-                    subtitle: "Zero setup. We handle API keys. 2000 dictations/mo.",
+                    subtitle: "Zero setup. We handle API keys. 5000 dictations/mo.",
                     color: .blue,
                     badge: "RECOMMENDED",
                     action: {

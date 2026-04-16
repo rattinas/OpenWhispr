@@ -85,13 +85,23 @@ enum LicenseManager {
                 let token = json["activationToken"] as? String ?? ""
                 let status = json["status"] as? String ?? ""
                 if status == "activated" {
-                    // Save activation locally on MainActor for UI updates
                     let activatedAt = json["activatedAt"] as? String ?? ""
+                    let tier = json["tier"] as? String ?? "lifetime"
+                    let useProxy = json["useCloudProxy"] as? Bool ?? false
+                    let subStatus = json["subscriptionStatus"] as? String ?? ""
+                    let periodEnd = json["currentPeriodEnd"] as? String ?? ""
+                    let trialRemaining = json["trialUsesRemaining"] as? Int ?? 0
+
                     await MainActor.run {
                         let settings = AppSettings.shared
                         settings.licenseKey = key
                         settings.activationToken = token
                         settings.activatedAt = activatedAt
+                        settings.tier = tier
+                        settings.useCloudProxy = useProxy
+                        settings.subscriptionStatus = subStatus
+                        settings.currentPeriodEnd = periodEnd
+                        settings.trialUsesRemaining = trialRemaining
                     }
                     return .success(token: token)
                 }

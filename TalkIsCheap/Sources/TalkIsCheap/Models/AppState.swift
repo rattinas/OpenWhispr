@@ -104,14 +104,41 @@ final class AppState: ObservableObject {
         Log.write("startRecording")
         AudioDimmer.shared.dim()
         SoundFeedback.recordStart()
+
+        // Progressive transcription: send first 3s chunk to Groq while still recording
+        progressiveTask = nil
+        progressiveResult = nil
+        recorder.onChunkReady = { [weak self] chunkWav in
+            guard let self else { return }
+            Log.write("Progressive: sending first chunk...")
+            self.progressiveTask = Task {
+                do {
+                    let text = try await TranscriberService.shared.transcribe(
+                        wavData: chunkWav,
+                        language: self.settings.language == "auto" ? nil : self.settings.language
+                    )
+                    self.progressiveResult = text
+                    Log.write("Progressive result ready: \(text.prefix(40))...")
+                } catch {
+                    Log.write("Progressive transcription failed: \(error)")
+                }
+            }
+        }
+
         recorder.start()
         status = .recording
         EqualizerOverlay.shared.show()
     }
 
+    private var progressiveTask: Task<Void, Never>?
+    private var progressiveResult: String?
+
     func cancelRecording() {
         guard case .recording = status else { return }
         Log.write("cancelRecording (short tap)")
+        progressiveTask?.cancel()
+        progressiveTask = nil
+        progressiveResult = nil
         _ = recorder.stop()
         AudioDimmer.shared.restore()
         status = .ready
@@ -124,6 +151,9 @@ final class AppState: ObservableObject {
         SoundFeedback.recordStop()
         let wavData = recorder.stop()
         Log.write("wav size: \(wavData.count)")
+
+        // Hide overlay immediately for speed perception
+        EqualizerOverlay.shared.hide()
         status = .transcribing
 
         Task { await process(wavData: wavData) }
@@ -134,12 +164,38 @@ final class AppState: ObservableObject {
         let modeName = appAwareMode() ?? settings.activePolishMode
 
         do {
-            // Transcribe
-            Log.write("Transcribing...")
-            let rawText = try await TranscriberService.shared.transcribe(
-                wavData: wavData,
-                language: settings.language == "auto" ? nil : settings.language
-            )
+            // Check if progressive transcription already has a result
+            let hasProgressiveResult = progressiveResult != nil && !(progressiveResult?.isEmpty ?? true)
+
+            let rawText: String
+            if hasProgressiveResult {
+                // Short recording (<5s): progressive result is likely the full transcription
+                // Long recording: still transcribe the full audio for accuracy
+                let wavBytes = wavData.count
+                let approxSeconds = Double(wavBytes) / (16000 * 4) // 16kHz * 4 bytes per float32
+
+                if approxSeconds <= 5.0 {
+                    // Short — use progressive result directly (saves ~800ms)
+                    rawText = progressiveResult!
+                    Log.write("Using progressive result (short \(String(format: "%.1f", approxSeconds))s)")
+                } else {
+                    // Long — transcribe full audio for best accuracy
+                    Log.write("Transcribing full audio (\(String(format: "%.1f", approxSeconds))s)...")
+                    rawText = try await TranscriberService.shared.transcribe(
+                        wavData: wavData,
+                        language: settings.language == "auto" ? nil : settings.language
+                    )
+                }
+            } else {
+                // No progressive result — normal path
+                Log.write("Transcribing...")
+                rawText = try await TranscriberService.shared.transcribe(
+                    wavData: wavData,
+                    language: settings.language == "auto" ? nil : settings.language
+                )
+            }
+            progressiveTask = nil
+            progressiveResult = nil
             Log.write("RAW: \(rawText.prefix(80))...")
 
             guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
