@@ -85,11 +85,14 @@ enum LicenseManager {
                 let token = json["activationToken"] as? String ?? ""
                 let status = json["status"] as? String ?? ""
                 if status == "activated" {
-                    // Save activation locally
-                    let settings = AppSettings.shared
-                    settings.licenseKey = key
-                    settings.activationToken = token
-                    settings.activatedAt = json["activatedAt"] as? String ?? ""
+                    // Save activation locally on MainActor for UI updates
+                    let activatedAt = json["activatedAt"] as? String ?? ""
+                    await MainActor.run {
+                        let settings = AppSettings.shared
+                        settings.licenseKey = key
+                        settings.activationToken = token
+                        settings.activatedAt = activatedAt
+                    }
                     return .success(token: token)
                 }
                 return .alreadyActivated(token: token)

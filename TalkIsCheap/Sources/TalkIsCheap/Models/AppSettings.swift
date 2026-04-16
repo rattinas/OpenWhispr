@@ -40,8 +40,19 @@ final class AppSettings: ObservableObject {
     @AppStorage("lastValidationCheck") var lastValidationCheck: Double = 0
     @AppStorage("trialUses") var trialUses: Int = 0
 
+    // Subscription & Proxy Mode
+    @AppStorage("tier") var tier: String = ""  // "trial", "lifetime", "pro_monthly", "pro_annual"
+    @AppStorage("useCloudProxy") var useCloudProxy: Bool = false
+    @AppStorage("trialUsesRemaining") var trialUsesRemaining: Int = 10
+    @AppStorage("subscriptionStatus") var subscriptionStatus: String = ""
+    @AppStorage("currentPeriodEnd") var currentPeriodEnd: String = ""
+
+    // Custom Dictionary (for proper nouns, company names, technical terms)
+    @AppStorage("customDictionary") var customDictionary: String = ""
+
     // Onboarding
     @AppStorage("hasCompletedOnboarding") var hasCompletedOnboarding: Bool = false
+    @AppStorage("paywallDismissed") var paywallDismissed: Bool = false
 
     // Polish mode
     @AppStorage("activePolishMode") var activePolishMode: String = "clean"
@@ -65,6 +76,28 @@ final class AppSettings: ObservableObject {
 
     var isTrialExpired: Bool { trialUses >= Self.trialLimit }
     var remainingTrial: Int { max(0, Self.trialLimit - trialUses) }
+
+    /// Whether this install should use the cloud proxy (Trial + Pro tiers).
+    var shouldUseProxy: Bool {
+        useCloudProxy && (tier == "trial" || tier == "pro_monthly" || tier == "pro_annual")
+    }
+
+    /// Should user see the paywall? Trial exhausted + no other mode configured.
+    var shouldShowPaywall: Bool {
+        tier == "trial" && trialUsesRemaining <= 0 && !paywallDismissed
+    }
+
+    /// Tier display label for UI
+    var tierLabel: String {
+        switch tier {
+        case "trial": return "Free Trial"
+        case "lifetime": return "Lifetime"
+        case "pro_monthly": return "Pro Monthly"
+        case "pro_annual": return "Pro Annual"
+        case "canceled": return "Canceled"
+        default: return "Not activated"
+        }
+    }
 
     /// Human-readable name for the current hotkey
     var hotkeyName: String {

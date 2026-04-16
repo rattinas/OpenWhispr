@@ -5,7 +5,7 @@ enum QuickActionInstaller {
     private static let servicesDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Services")
 
-    private static let workflowVersion = "2"  // bump to force reinstall on update
+    private static let workflowVersion = "4"  // bump to force reinstall on update
 
     /// Install Quick Actions (reinstalls if version changed)
     static func installIfNeeded() {
@@ -170,18 +170,12 @@ enum QuickActionInstaller {
         try? wflow.write(to: workflowDir.appendingPathComponent("document.wflow"), atomically: true, encoding: .utf8)
     }
 
-    // Shell scripts that open TalkIsCheap with the file path (URL-encoded for spaces/special chars)
-    private static let transcribeScript = """
-    for f in "$@"; do
-        encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$f")
-        open "talkischeap://transcribe?path=$encoded"
-    done
-    """
+    // Simple scripts — write path to temp file, open URL scheme.
+    // No complex bash needed — avoids XML escaping issues in Automator workflows.
+    // These scripts run inside Automator's Run Shell Script action.
+    // They write the file path to a temp file, then trigger the URL scheme.
+    // Kept as simple single-line bash to avoid XML escaping nightmares.
+    private static let transcribeScript = #"for f in "$@"; do echo "$f" > /tmp/.talkischeap_path; /usr/bin/open "talkischeap://transcribe-file"; done"#
 
-    private static let transcribeSummarizeScript = """
-    for f in "$@"; do
-        encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$f")
-        open "talkischeap://transcribe-summarize?path=$encoded"
-    done
-    """
+    private static let transcribeSummarizeScript = #"for f in "$@"; do echo "$f" > /tmp/.talkischeap_path; /usr/bin/open "talkischeap://transcribe-summarize-file"; done"#
 }

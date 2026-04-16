@@ -16,6 +16,7 @@ struct SettingsView: View {
         TabView(selection: $selectedTab) {
             generalTab.tabItem { Label("General", systemImage: "gear") }.tag("general")
             apiKeysTab.tabItem { Label("API Keys", systemImage: "key") }.tag("keys")
+            DictionaryView().tabItem { Label("Dictionary", systemImage: "book") }.tag("dictionary")
             modesTab.tabItem { Label("Modes", systemImage: "sparkles") }.tag("modes")
             licenseTab.tabItem { Label("License", systemImage: "lock.shield") }.tag("license")
             aboutTab.tabItem { Label("About", systemImage: "info.circle") }.tag("about")
@@ -260,8 +261,61 @@ struct SettingsView: View {
 
     private var licenseTab: some View {
         Form {
+            // Subscription/Tier Status
+            Section("Your Plan") {
+                HStack(spacing: 12) {
+                    Image(systemName: tierIcon).foregroundStyle(tierColor).font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(settings.tierLabel).font(.headline)
+                        Text(tierSubtitle).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+
+                if settings.tier == "trial" {
+                    ProgressView(value: Double(10 - settings.trialUsesRemaining), total: 10)
+                        .tint(.orange)
+                    Text("\(settings.trialUsesRemaining) free uses remaining")
+                        .font(.caption).foregroundStyle(.secondary)
+
+                    Button {
+                        NotificationCenter.default.post(name: .showPaywall, object: nil)
+                    } label: {
+                        Label("Upgrade Now", systemImage: "sparkles")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                }
+
+                if settings.tier == "pro_monthly" || settings.tier == "pro_annual" {
+                    Button {
+                        Task { await openStripePortal() }
+                    } label: {
+                        Label("Manage Subscription", systemImage: "arrow.up.right.square")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.bordered)
+
+                    if !settings.currentPeriodEnd.isEmpty {
+                        Text("Renews: \(formatDate(settings.currentPeriodEnd))")
+                            .font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+
             Section {
-                if LicenseManager.isLicensed {
+                if LicenseManager.isLicensed && settings.tier == "lifetime" {
+                    HStack {
+                        Image(systemName: "checkmark.seal.fill").foregroundStyle(.green).font(.title2)
+                        VStack(alignment: .leading) {
+                            Text("Lifetime License Active").font(.headline)
+                            Text("Activated on this Mac").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                } else if LicenseManager.isLicensed {
                     HStack {
                         Image(systemName: "checkmark.seal.fill").foregroundStyle(.green).font(.title2)
                         VStack(alignment: .leading) {
@@ -311,7 +365,7 @@ struct SettingsView: View {
                     Button {
                         isActivating = true
                         activationMessage = nil
-                        Task {
+                        Task { @MainActor in
                             let result = await LicenseManager.activate(key: licenseInput)
                             isActivating = false
                             switch result {
@@ -362,7 +416,7 @@ struct SettingsView: View {
 
                     Button(role: .destructive) {
                         isDeactivating = true
-                        Task {
+                        Task { @MainActor in
                             let success = await LicenseManager.deactivate()
                             isDeactivating = false
                             if !success {
@@ -389,6 +443,64 @@ struct SettingsView: View {
     }
 
     // MARK: - About
+
+    // MARK: - Subscription helpers
+
+    private var tierIcon: String {
+        switch settings.tier {
+        case "trial": return "clock.fill"
+        case "lifetime": return "infinity.circle.fill"
+        case "pro_monthly", "pro_annual": return "star.circle.fill"
+        case "canceled": return "xmark.circle.fill"
+        default: return "questionmark.circle.fill"
+        }
+    }
+
+    private var tierColor: Color {
+        switch settings.tier {
+        case "trial": return .orange
+        case "lifetime": return Color(red: 0.91, green: 0.38, blue: 0.30)
+        case "pro_monthly", "pro_annual": return .blue
+        case "canceled": return .red
+        default: return .gray
+        }
+    }
+
+    private var tierSubtitle: String {
+        switch settings.tier {
+        case "trial": return "API keys included. Upgrade to keep going."
+        case "lifetime": return "Unlimited. You provide API keys."
+        case "pro_monthly": return "2000 dictations/mo, we provide API keys"
+        case "pro_annual": return "2000 dictations/mo, annual billing"
+        case "canceled": return "Subscription ended. Reactivate or switch to Lifetime."
+        default: return "Not activated"
+        }
+    }
+
+    private func formatDate(_ iso: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: iso) else { return iso }
+        let df = DateFormatter()
+        df.dateStyle = .medium
+        return df.string(from: date)
+    }
+
+    private func openStripePortal() async {
+        guard var request = URLRequest(url: URL(string: "https://talkischeap.app/api/subscription/portal")!) as URLRequest? else { return }
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(settings.activationToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(LicenseManager.hardwareUUID(), forHTTPHeaderField: "X-Hardware-Id")
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let urlStr = json["url"] as? String,
+               let url = URL(string: urlStr) {
+                NSWorkspace.shared.open(url)
+            }
+        } catch {
+            Log.write("Portal open failed: \(error)")
+        }
+    }
 
     private var aboutTab: some View {
         VStack(spacing: 16) {

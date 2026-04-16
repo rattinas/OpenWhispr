@@ -20,6 +20,14 @@ final class SearchService {
     func search(query: String) async throws -> SearchResult {
         Log.write("Search: \(query)")
 
+        // Pro / Trial users use our proxy (bundles Brave + Claude in one call)
+        if AppSettings.shared.shouldUseProxy {
+            let language = AppSettings.shared.language == "auto" ? nil : AppSettings.shared.language
+            let proxyResult = try await ProxyClient.search(query: query, language: language)
+            let sources = proxyResult.sources.map { SearchSource(title: $0.title, url: $0.url, thumbnail: nil) }
+            return SearchResult(query: query, answer: proxyResult.answer, sources: sources, images: [])
+        }
+
         // 1. Get web + image results from Brave
         let (webResults, imageURLs) = try await braveSearch(query: query)
         Log.write("Brave: \(webResults.count) results, \(imageURLs.count) images")

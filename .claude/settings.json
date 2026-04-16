@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"^/Users/bene/Documents/Projekte/OpenWhispr/[^/]+$|^/Users/bene/Documents/Projekte/OpenWhispr/src\")",
+      "Bash(ls -la /Users/bene/Documents/Projekte/OpenWhispr/*.*)",
+      "Bash(npx next:*)"
+    ],
+    "additionalDirectories": [
+      "/Users/bene/Documents/Projekte/talkischeap-website/src/app",
+      "/Users/bene/Documents/Projekte/talkischeap-website/src/lib",
+      "/Users/bene/Documents/Projekte/talkischeap-website/public",
+      "/Users/bene/Documents/Projekte/talkischeap-website"
+    ]
+  }
+}

@@ -27,6 +27,29 @@ final class AppState: ObservableObject {
     let modeManager = PolishModeManager.shared
     let history = TranscriptionHistory.shared
 
+    /// Unified check: can the user make a transcription right now?
+    /// Pro/Lifetime/Trial-with-uses → true. Otherwise → false (show paywall).
+    var hasAccess: Bool {
+        // Trial with remaining uses
+        if settings.tier == "trial" && settings.trialUsesRemaining > 0 {
+            return true
+        }
+        // Pro active subscription
+        if (settings.tier == "pro_monthly" || settings.tier == "pro_annual")
+           && settings.subscriptionStatus == "active" {
+            return true
+        }
+        // Lifetime (legacy canUse path still works — user has own keys)
+        if LicenseManager.isLicensed {
+            return true
+        }
+        // Legacy trial fallback (old 50-use counter)
+        if !LicenseManager.isLicensed && settings.remainingTrial > 0 {
+            return true
+        }
+        return false
+    }
+
     var menuBarIcon: String {
         switch status {
         case .recording: return "mic.fill"
@@ -51,9 +74,16 @@ final class AppState: ObservableObject {
     }
 
     func startRecording() {
-        // Check license
-        guard LicenseManager.canUse else {
-            status = .error("Trial expired — buy license in menu bar")
+        // Trial exhausted → show paywall
+        if settings.shouldShowPaywall {
+            NotificationCenter.default.post(name: .showPaywall, object: nil)
+            SoundFeedback.error()
+            return
+        }
+
+        // Check license (lifetime / pro / trial with uses remaining)
+        guard hasAccess else {
+            NotificationCenter.default.post(name: .showPaywall, object: nil)
             SoundFeedback.error()
             return
         }
@@ -172,8 +202,13 @@ final class AppState: ObservableObject {
     // MARK: - Voice Search (Ctrl+Cmd)
 
     func startSearchRecording() {
-        guard LicenseManager.canUse else {
-            status = .error("Trial expired — buy license in menu bar")
+        if settings.shouldShowPaywall {
+            NotificationCenter.default.post(name: .showPaywall, object: nil)
+            SoundFeedback.error()
+            return
+        }
+        guard hasAccess else {
+            NotificationCenter.default.post(name: .showPaywall, object: nil)
             SoundFeedback.error()
             return
         }

@@ -222,19 +222,53 @@ class WhisprFlowApp(rumps.App):
 
     def _build_hotkey_menu(self):
         current = settings.get_hotkey()
-        for key, desc in HOTKEYS.items():
-            item = rumps.MenuItem(desc, callback=self._make_hotkey_cb(key))
-            item.state = 1 if key == current else 0
-            self.hotkey_menu.add(item)
+        current_desc = HOTKEYS.get(current, current.upper())
 
-    def _make_hotkey_cb(self, key):
-        def cb(_):
-            settings.set_hotkey(key)
-            for item in self.hotkey_menu.values():
-                item.state = 0
-            self.hotkey_menu[HOTKEYS[key]].state = 1
-            rumps.alert("Hotkey Changed", f"New hotkey: {HOTKEYS[key]}\n\nPlease restart WhisprFlow for the change to take effect.")
-        return cb
+        self.hotkey_current = rumps.MenuItem(f"Current: {current_desc}", callback=None)
+        self.hotkey_current.set_callback(None)
+        self.hotkey_menu.add(self.hotkey_current)
+        self.hotkey_menu.add(rumps.MenuItem("🎯 Press new key...", callback=self._capture_hotkey))
+
+    def _capture_hotkey(self, _):
+        rumps.notification("WhisprFlow", "Press your desired hotkey now", "Waiting for keypress...")
+
+        def capture():
+            def on_press(key):
+                key_name = None
+                if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
+                    key_name = "ctrl"
+                elif key == keyboard.Key.f5:
+                    key_name = "f5"
+                elif key == keyboard.Key.f6:
+                    key_name = "f6"
+                elif key == keyboard.Key.f8:
+                    key_name = "f8"
+                elif key == keyboard.Key.f9:
+                    key_name = "f9"
+                elif key == keyboard.Key.f10:
+                    key_name = "f10"
+                elif key == keyboard.Key.f11:
+                    key_name = "f11"
+                elif key == keyboard.Key.f12:
+                    key_name = "f12"
+                elif hasattr(key, 'char') and key.char:
+                    key_name = key.char
+
+                if key_name:
+                    settings.set_hotkey(key_name)
+                    desc = HOTKEYS.get(key_name, key_name.upper())
+                    self.hotkey_current.title = f"Current: {desc}"
+                    rumps.alert("Hotkey Set ✅", f"New hotkey: {desc}\n\nRestart WhisprFlow for the change to take effect.")
+                    return False  # stop listener
+
+            listener = keyboard.Listener(on_press=on_press)
+            listener.start()
+            listener.join(timeout=10)  # 10 second timeout
+            if listener.is_alive():
+                listener.stop()
+                rumps.notification("WhisprFlow", "Timeout", "No key pressed. Hotkey unchanged.")
+
+        threading.Thread(target=capture, daemon=True).start()
 
     def _build_mic_menu(self):
         devices = _get_input_devices()

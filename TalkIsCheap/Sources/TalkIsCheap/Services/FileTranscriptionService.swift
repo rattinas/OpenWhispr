@@ -11,6 +11,17 @@ final class FileTranscriptionService {
     /// File extensions that contain text (no audio transcription needed)
     private let documentExtensions = ["pdf", "docx"]
 
+    /// Find ffmpeg binary — checks multiple paths for compatibility
+    private func findFFmpeg() -> String? {
+        let paths = [
+            "/opt/homebrew/bin/ffmpeg",      // Apple Silicon Homebrew
+            "/usr/local/bin/ffmpeg",          // Intel Homebrew
+            "/usr/bin/ffmpeg",                // System
+            "/opt/local/bin/ffmpeg",          // MacPorts
+        ]
+        return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
     // MARK: - Main pipeline
 
     func transcribe(filePath: String) async throws -> String {
@@ -134,7 +145,8 @@ final class FileTranscriptionService {
         args += ["-ac", "1", "-ar", "16000", "-b:a", "48k", "-y", compressedPath.path]
 
         let ffmpeg = Process()
-        ffmpeg.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+        guard let ffmpegPath = findFFmpeg() else { throw FileTranscriptionError.ffmpegFailed }
+        ffmpeg.executableURL = URL(fileURLWithPath: ffmpegPath)
         ffmpeg.arguments = args
         ffmpeg.standardOutput = FileHandle.nullDevice
         ffmpeg.standardError = FileHandle.nullDevice
@@ -244,10 +256,23 @@ final class FileTranscriptionService {
 
     // MARK: - Split audio
 
+    private func findFFprobe() -> String? {
+        let paths = [
+            "/opt/homebrew/bin/ffprobe",
+            "/usr/local/bin/ffprobe",
+            "/usr/bin/ffprobe",
+            "/opt/local/bin/ffprobe",
+        ]
+        return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
     private func splitAudio(inputPath: String) throws -> [String] {
+        guard let ffprobePath = findFFprobe() else { throw FileTranscriptionError.ffmpegFailed }
+        guard let ffmpegPath = findFFmpeg() else { throw FileTranscriptionError.ffmpegFailed }
+
         let probe = Process()
         let pipe = Pipe()
-        probe.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffprobe")
+        probe.executableURL = URL(fileURLWithPath: ffprobePath)
         probe.arguments = ["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", inputPath]
         probe.standardOutput = pipe
         probe.standardError = FileHandle.nullDevice
@@ -263,7 +288,7 @@ final class FileTranscriptionService {
         for i in 0..<chunkCount {
             let chunkPath = tmpDir.appendingPathComponent("chunk_\(i).mp3").path
             let split = Process()
-            split.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+            split.executableURL = URL(fileURLWithPath: ffmpegPath)
             split.arguments = ["-i", inputPath, "-ss", "\(Int(Double(i) * chunkDuration))", "-t", "\(Int(chunkDuration))", "-c", "copy", "-y", chunkPath]
             split.standardOutput = FileHandle.nullDevice
             split.standardError = FileHandle.nullDevice
@@ -420,7 +445,7 @@ enum FileTranscriptionError: LocalizedError {
         switch self {
         case .noApiKey(let msg): return msg
         case .apiError(let msg): return "API: \(msg)"
-        case .ffmpegFailed: return "ffmpeg failed — brew install ffmpeg"
+        case .ffmpegFailed: return "ffmpeg not found. Open Terminal and run: brew install ffmpeg"
         case .unsupportedFormat: return "Unsupported format"
         }
     }

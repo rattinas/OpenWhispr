@@ -13,7 +13,7 @@ struct OnboardingView: View {
         settings.sttProvider == "local" || settings.polishProvider == "ollama"
     }
 
-    private let totalSteps = 9
+    private let totalSteps = 10
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,11 +35,12 @@ struct OnboardingView: View {
                 case 1: permissionsStep
                 case 2: speechStep
                 case 3: polishStep
-                case 4: localInstallStep
-                case 5: languageStep
-                case 6: howToDictateStep
-                case 7: polishModesStep
-                case 8: readyStep
+                case 4: searchStep
+                case 5: localInstallStep
+                case 6: languageStep
+                case 7: howToDictateStep
+                case 8: polishModesStep
+                case 9: readyStep
                 default: readyStep
                 }
             }
@@ -171,17 +172,23 @@ struct OnboardingView: View {
 
             if settings.sttProvider == "groq" {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Groq API Key").font(.caption.bold())
-                    SecureField("gsk_...", text: $settings.groqApiKey)
+                    HStack {
+                        Text("Groq API Key").font(.caption.bold())
+                        Spacer()
+                        Text("OPTIONAL").font(.system(size: 9, weight: .bold)).foregroundStyle(.green)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.green.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                    SecureField("gsk_... (leave empty for 10 free uses)", text: $settings.groqApiKey)
                         .textFieldStyle(.roundedBorder)
                     HStack {
                         Link("Get free key →", destination: URL(string: "https://console.groq.com/keys")!)
                             .font(.caption)
                         Spacer()
-                        skipButton("Use local instead") {
-                            settings.sttProvider = "local"
-                            withAnimation { step += 1 }
-                        }
+                        Text("Or leave empty to try with our keys (10 free uses)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
                 }
                 .padding(.top, 4)
@@ -217,17 +224,23 @@ struct OnboardingView: View {
 
             if settings.polishProvider == "anthropic" {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Anthropic API Key").font(.caption.bold())
-                    SecureField("sk-ant-...", text: $settings.anthropicApiKey)
+                    HStack {
+                        Text("Anthropic API Key").font(.caption.bold())
+                        Spacer()
+                        Text("OPTIONAL").font(.system(size: 9, weight: .bold)).foregroundStyle(.green)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color.green.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                    SecureField("sk-ant-... (leave empty for 10 free uses)", text: $settings.anthropicApiKey)
                         .textFieldStyle(.roundedBorder)
                     HStack {
                         Link("Get key →", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
                             .font(.caption)
                         Spacer()
-                        skipButton("Use local instead") {
-                            settings.polishProvider = "ollama"
-                            withAnimation { step += 1 }
-                        }
+                        Text("Skip to try with our keys first")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
                 }
                 .padding(.top, 4)
@@ -238,7 +251,60 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Step 4b: Local Install
+    // MARK: - Step 4b: Voice Search (Brave API Key)
+
+    private var searchStep: some View {
+        VStack(spacing: 16) {
+            stepHeader(icon: "magnifyingglass", title: "Voice Search", subtitle: "Double-tap your hotkey to search the web with your voice")
+
+            Spacer()
+
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    Image(systemName: "magnifyingglass.circle.fill")
+                        .font(.title)
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Brave Search + Claude AI").font(.subheadline.bold())
+                        Text("Ask any question, get an instant AI-summarized answer with sources.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(12)
+                .background(Color.orange.opacity(0.05))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Brave Search API Key").font(.caption.bold())
+                    Spacer()
+                    Text("OPTIONAL").font(.system(size: 9, weight: .bold)).foregroundStyle(.green)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.green.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+                SecureField("BSA... (leave empty to use our keys)", text: $settings.braveApiKey)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Link("Get free key (2000/mo) →", destination: URL(string: "https://brave.com/search/api/")!)
+                        .font(.caption)
+                    Spacer()
+                }
+            }
+            .padding(.top, 4)
+
+            Text("Voice Search works with your trial keys too. Skip to use ours.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+
+            Spacer()
+            nextButton()
+        }
+    }
+
+    // MARK: - Step 5: Local Install
 
     private var localInstallStep: some View {
         VStack(spacing: 16) {
@@ -513,7 +579,7 @@ struct OnboardingView: View {
 
             HStack(spacing: 4) {
                 Image(systemName: "gift").font(.caption)
-                Text("You have 50 free trial uses.")
+                Text("10 free uses included — no API keys needed.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -521,8 +587,20 @@ struct OnboardingView: View {
             Spacer()
 
             Button {
-                settings.hasCompletedOnboarding = true
-                dismiss()
+                Task {
+                    // If user hasn't entered their own API keys AND didn't pick local mode,
+                    // start a trial on our backend so they can use the app immediately.
+                    let hasGroq = !settings.groqApiKey.isEmpty
+                    let hasAnthropic = !settings.anthropicApiKey.isEmpty
+                    let usingLocal = settings.sttProvider == "local" && settings.polishProvider == "ollama"
+                    if !hasGroq && !hasAnthropic && !usingLocal {
+                        _ = await ProxyClient.startTrial()
+                    }
+                    await MainActor.run {
+                        settings.hasCompletedOnboarding = true
+                        dismiss()
+                    }
+                }
             } label: {
                 Text("Start Using TalkIsCheap")
                     .frame(maxWidth: .infinity)

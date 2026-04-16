@@ -14,6 +14,17 @@ final class PolisherService {
             systemPrompt += "\n" + extraContext
         }
 
+        // Inject custom dictionary context for better proper noun handling
+        let dict = settings.customDictionary
+        if !dict.isEmpty {
+            systemPrompt += "\n\n<dictionary>\nThe user commonly uses these proper nouns, company names, or technical terms. Preserve them exactly:\n\(dict)\n</dictionary>"
+        }
+
+        // Pro / Trial users use our proxy
+        if settings.shouldUseProxy {
+            return try await ProxyClient.polish(text: text, systemPrompt: systemPrompt)
+        }
+
         if settings.polishProvider == "ollama" {
             return try await polishOllama(text: text, system: systemPrompt)
         } else {

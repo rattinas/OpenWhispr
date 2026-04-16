@@ -106,9 +106,44 @@ final class StartupManager: ObservableObject {
         if !AppSettings.shared.hasCompletedOnboarding {
             showOnboardingPanel()
         }
+
+        // Listen for paywall show requests
+        NotificationCenter.default.addObserver(
+            forName: .showPaywall,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.showPaywallPanel()
+        }
+    }
+
+    private var paywallPanel: NSPanel?
+
+    private func showPaywallPanel() {
+        if paywallPanel?.isVisible == true {
+            paywallPanel?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 620),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: true
+        )
+        panel.title = "TalkIsCheap"
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.contentView = NSHostingView(rootView: PaywallView())
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        paywallPanel = panel
+        Log.write("Paywall shown")
     }
 
     private var onboardingPanel: NSPanel?
+    private var onboardingDelegate: OnboardingWindowDelegate?
 
     private func showOnboardingPanel() {
         let panel = NSPanel(
@@ -123,6 +158,12 @@ final class StartupManager: ObservableObject {
         panel.hidesOnDeactivate = false
         panel.contentView = NSHostingView(rootView: OnboardingView())
         panel.center()
+
+        // Mark onboarding complete if user closes panel via X button
+        let delegate = OnboardingWindowDelegate()
+        panel.delegate = delegate
+        onboardingDelegate = delegate
+
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         onboardingPanel = panel
@@ -167,25 +208,36 @@ final class StartupManager: ObservableObject {
     }
 
     @objc func handleURL(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
-        guard LicenseManager.canUse else {
-            Log.write("URL handler blocked: trial expired")
-            return
-        }
-
         guard let urlString = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
               let url = URL(string: urlString)
         else { return }
 
         Log.write("URL received: \(urlString)")
-
         let host = url.host ?? ""
-        let path = url.queryItems?["path"] ?? ""
 
+        // New approach: read file path from temp file (avoids URL-encoding issues)
+        if host.contains("file") {
+            let tmpPath = "/tmp/.talkischeap_path"
+            guard let filePath = try? String(contentsOfFile: tmpPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+                  !filePath.isEmpty else {
+                Log.write("No path in temp file")
+                return
+            }
+            try? FileManager.default.removeItem(atPath: tmpPath)
+            Log.write("File path from temp: \(filePath)")
+
+            Task { @MainActor in
+                FileTranscriptionManager.shared.processFile(path: filePath)
+            }
+            return
+        }
+
+        // Legacy: URL query parameter approach
+        let path = url.queryItems?["path"] ?? ""
         guard !path.isEmpty else {
             Log.write("No path in URL")
             return
         }
-
         let decodedPath = path.removingPercentEncoding ?? path
 
         Task { @MainActor in
@@ -209,5 +261,13 @@ extension URL {
             guard let value = item.value else { return nil }
             return (item.name, value)
         })
+    }
+}
+
+// Handles onboarding window close: marks onboarding complete if user closes via X
+final class OnboardingWindowDelegate: NSObject, NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        AppSettings.shared.hasCompletedOnboarding = true
+        Log.write("Onboarding window closed — marking complete")
     }
 }

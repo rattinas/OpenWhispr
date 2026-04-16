@@ -6,17 +6,23 @@ final class TranscriberService {
 
     func transcribe(wavData: Data, language: String?) async throws -> String {
         let settings = AppSettings.shared
+        let dict = settings.customDictionary.isEmpty ? nil : settings.customDictionary
+
+        // Use our cloud proxy for Trial + Pro users
+        if settings.shouldUseProxy {
+            return try await ProxyClient.transcribe(wavData: wavData, language: language, dictionary: dict)
+        }
 
         if settings.sttProvider == "local" {
             return try await transcribeLocal(wavData: wavData, language: language)
         } else {
-            return try await transcribeGroq(wavData: wavData, language: language)
+            return try await transcribeGroq(wavData: wavData, language: language, dictionary: dict)
         }
     }
 
     // MARK: - Groq Cloud
 
-    private func transcribeGroq(wavData: Data, language: String?) async throws -> String {
+    private func transcribeGroq(wavData: Data, language: String?, dictionary: String? = nil) async throws -> String {
         let apiKey = AppSettings.shared.groqApiKey
         guard !apiKey.isEmpty else {
             throw TranscriberError.noApiKey
@@ -48,6 +54,13 @@ final class TranscriberService {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
             body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
             body.append("\(lang)\r\n".data(using: .utf8)!)
+        }
+
+        // Custom vocabulary — helps Whisper recognize proper nouns, company names, technical terms
+        if let dict = dictionary, !dict.isEmpty {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(dict)\r\n".data(using: .utf8)!)
         }
 
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
