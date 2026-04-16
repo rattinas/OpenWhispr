@@ -13,7 +13,8 @@ struct OnboardingView: View {
         settings.sttProvider == "local" || settings.polishProvider == "ollama"
     }
 
-    private let totalSteps = 10
+    @State private var selectedPlan = "cloud" // "cloud", "byok", "offline"
+    private let totalSteps = 9
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,14 +34,13 @@ struct OnboardingView: View {
                 switch step {
                 case 0: welcomeStep
                 case 1: permissionsStep
-                case 2: speechStep
-                case 3: polishStep
-                case 4: searchStep
-                case 5: localInstallStep
-                case 6: languageStep
-                case 7: howToDictateStep
-                case 8: polishModesStep
-                case 9: readyStep
+                case 2: planStep
+                case 3: apiKeysStep
+                case 4: localInstallStep
+                case 5: languageStep
+                case 6: howToDictateStep
+                case 7: polishModesStep
+                case 8: readyStep
                 default: readyStep
                 }
             }
@@ -61,10 +61,14 @@ struct OnboardingView: View {
         VStack(spacing: 16) {
             Spacer()
 
-            Image(systemName: "mic.circle.fill")
-                .font(.system(size: 72))
-                .foregroundStyle(.blue)
-                .shadow(color: .blue.opacity(0.3), radius: 20)
+            // App icon from bundle
+            if let iconImage = NSImage(named: "AppIcon") ?? NSApp.applicationIconImage {
+                Image(nsImage: iconImage)
+                    .resizable()
+                    .frame(width: 100, height: 100)
+                    .clipShape(RoundedRectangle(cornerRadius: 22))
+                    .shadow(color: .black.opacity(0.2), radius: 10)
+            }
 
             Text("TalkIsCheap")
                 .font(.system(size: 32, weight: .bold, design: .rounded))
@@ -80,7 +84,7 @@ struct OnboardingView: View {
             }
             .padding(.top, 8)
 
-            Text("50 free uses included. No credit card needed.")
+            Text("10 free uses included. No credit card needed.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .padding(.top, 4)
@@ -118,22 +122,42 @@ struct OnboardingView: View {
                     desc: "To paste text at your cursor position",
                     granted: accessibilityGranted,
                     action: {
-                        // Show native system prompt (triggers the macOS dialog)
-                        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-                        AXIsProcessTrustedWithOptions(opts)
-                        // Poll for grant (stop after 120s)
+                        // Open System Settings directly and bring to front
+                        PermissionManager.openAccessibilitySettings()
+                        // Brief delay then bring our window back to front
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            NSApp.activate(ignoringOtherApps: true)
+                            // Find and raise our onboarding panel
+                            for window in NSApp.windows where window.title == "TalkIsCheap Setup" {
+                                window.makeKeyAndOrderFront(nil)
+                            }
+                        }
+                        // Poll for grant
                         var pollCount = 0
-                        Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { timer in
+                        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { timer in
                             pollCount += 1
                             if AXIsProcessTrusted() {
                                 accessibilityGranted = true
                                 timer.invalidate()
-                            } else if pollCount > 80 {
+                            } else if pollCount > 60 {
                                 timer.invalidate()
                             }
                         }
                     }
                 )
+
+                if !accessibilityGranted {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("How to grant Accessibility:").font(.caption.bold())
+                        Text("1. System Settings opens → find TalkIsCheap in the list").font(.caption2)
+                        Text("2. Toggle the switch ON").font(.caption2)
+                        Text("3. You may need to unlock with your password first (🔒 icon)").font(.caption2)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .background(Color.orange.opacity(0.05))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
             }
 
             Text("These permissions stay on your Mac. We never access your data.")
@@ -147,9 +171,140 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Step 3: Speech Engine
+    // MARK: - Step 2b: Plan Selection
 
-    private var speechStep: some View {
+    private var planStep: some View {
+        VStack(spacing: 16) {
+            stepHeader(icon: "bolt.circle.fill", title: "How do you want to use TalkIsCheap?", subtitle: "You can change this anytime in Settings")
+
+            Spacer()
+
+            VStack(spacing: 10) {
+                planCard(
+                    emoji: "☁️",
+                    title: "Use our cloud (recommended)",
+                    subtitle: "Zero setup. We handle everything. 10 free uses, then from $9.99/mo.",
+                    selected: selectedPlan == "cloud",
+                    action: { selectedPlan = "cloud" }
+                )
+                planCard(
+                    emoji: "🔑",
+                    title: "Bring your own API keys",
+                    subtitle: "Free unlimited. You set up Groq + Anthropic keys yourself.",
+                    selected: selectedPlan == "byok",
+                    action: { selectedPlan = "byok" }
+                )
+                planCard(
+                    emoji: "💻",
+                    title: "Full offline mode",
+                    subtitle: "100% private. Downloads ~3.5GB of local AI models.",
+                    selected: selectedPlan == "offline",
+                    action: { selectedPlan = "offline" }
+                )
+            }
+
+            Spacer()
+
+            Button {
+                // Apply plan selection
+                switch selectedPlan {
+                case "cloud":
+                    settings.useCloudProxy = true
+                    settings.sttProvider = "groq"
+                    settings.polishProvider = "anthropic"
+                    // Skip API keys step → go to localInstallStep (which auto-skips for cloud)
+                    withAnimation { step = 4 }
+                case "byok":
+                    settings.useCloudProxy = false
+                    settings.sttProvider = "groq"
+                    settings.polishProvider = "anthropic"
+                    // Show API keys step
+                    withAnimation { step += 1 }
+                case "offline":
+                    settings.useCloudProxy = false
+                    settings.sttProvider = "local"
+                    settings.polishProvider = "ollama"
+                    // Skip API keys → go to local install
+                    withAnimation { step = 4 }
+                default:
+                    withAnimation { step += 1 }
+                }
+            } label: {
+                Text("Continue")
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func planCard(emoji: String, title: String, subtitle: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Text(emoji).font(.title)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.subheadline.bold())
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer()
+                if selected {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.blue).font(.title3)
+                }
+            }
+            .padding(12)
+            .background(selected ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.accentColor : .clear, lineWidth: 2)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Step 3: API Keys (only for BYOK)
+
+    private var apiKeysStep: some View {
+        VStack(spacing: 16) {
+            stepHeader(icon: "key.fill", title: "Enter your API Keys", subtitle: "These are free to create. Your data goes directly to the API — we never see it.")
+
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Groq API Key (Speech-to-Text)").font(.caption.bold())
+                    SecureField("gsk_...", text: $settings.groqApiKey).textFieldStyle(.roundedBorder)
+                    Link("Get free key at console.groq.com →", destination: URL(string: "https://console.groq.com/keys")!).font(.caption)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Anthropic API Key (Text Polishing)").font(.caption.bold())
+                    SecureField("sk-ant-...", text: $settings.anthropicApiKey).textFieldStyle(.roundedBorder)
+                    Link("Get key at console.anthropic.com →", destination: URL(string: "https://console.anthropic.com/settings/keys")!).font(.caption)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Brave Search API Key (Voice Search — optional)").font(.caption.bold())
+                    SecureField("BSA...", text: $settings.braveApiKey).textFieldStyle(.roundedBorder)
+                    Link("Get free key at brave.com →", destination: URL(string: "https://brave.com/search/api/")!).font(.caption)
+                }
+            }
+
+            Spacer()
+
+            // Skip local install for BYOK
+            Button {
+                withAnimation { step = 5 } // Jump to language
+            } label: {
+                Text("Continue").frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    // MARK: - (old speechStep replaced by planStep above)
+
+    private var speechStep_unused: some View {
         VStack(spacing: 16) {
             stepHeader(icon: "mic.fill", title: "Speech Recognition", subtitle: "Choose how TalkIsCheap hears you")
 
@@ -588,12 +743,8 @@ struct OnboardingView: View {
 
             Button {
                 Task {
-                    // If user hasn't entered their own API keys AND didn't pick local mode,
-                    // start a trial on our backend so they can use the app immediately.
-                    let hasGroq = !settings.groqApiKey.isEmpty
-                    let hasAnthropic = !settings.anthropicApiKey.isEmpty
-                    let usingLocal = settings.sttProvider == "local" && settings.polishProvider == "ollama"
-                    if !hasGroq && !hasAnthropic && !usingLocal {
+                    // Start trial for cloud users (zero setup path)
+                    if selectedPlan == "cloud" || settings.useCloudProxy {
                         _ = await ProxyClient.startTrial()
                     }
                     await MainActor.run {
