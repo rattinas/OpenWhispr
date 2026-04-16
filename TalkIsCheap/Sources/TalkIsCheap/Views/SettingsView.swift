@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var isCapturingHotkey = false
     @State private var hotkeyDisplay = "Control"
     @State private var autoStartEnabled = LoginItemManager.isEnabled
+    @State private var showingFeedback = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -21,11 +22,13 @@ struct SettingsView: View {
             DictionaryView().tabItem { Label("Dictionary", systemImage: "book") }.tag("dictionary")
             modesTab.tabItem { Label("Modes", systemImage: "sparkles") }.tag("modes")
             licenseTab.tabItem { Label("License", systemImage: "lock.shield") }.tag("license")
+            updatesTab.tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }.tag("updates")
             aboutTab.tabItem { Label("About", systemImage: "info.circle") }.tag("about")
         }
         .frame(width: 540, height: 460)
         .sheet(isPresented: $showNewScenario) { newScenarioSheet }
         .sheet(item: $editingPromptFor) { mode in editPromptSheet(mode: mode) }
+        .sheet(isPresented: $showingFeedback) { FeedbackView() }
     }
 
     // MARK: - General
@@ -142,7 +145,6 @@ struct SettingsView: View {
                         LoginItemManager.setEnabled(newValue)
                     }
 
-                // Permissions
                 HStack {
                     Label(PermissionManager.accessibilityGranted ? "Accessibility ✅" : "Accessibility ❌",
                           systemImage: "hand.raised")
@@ -263,7 +265,6 @@ struct SettingsView: View {
 
     private var licenseTab: some View {
         Form {
-            // Subscription/Tier Status
             Section("Your Plan") {
                 HStack(spacing: 12) {
                     Image(systemName: tierIcon).foregroundStyle(tierColor).font(.title2)
@@ -444,6 +445,40 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
+    // MARK: - Updates
+
+    private var updatesTab: some View {
+        Form {
+            Section("Version") {
+                HStack {
+                    Text("Current version")
+                    Spacer()
+                    Text(UpdateManager.shared.currentVersion)
+                        .foregroundStyle(.secondary)
+                        .font(.system(.body, design: .monospaced))
+                }
+            }
+
+            Section("Automatic Updates") {
+                Toggle("Check for updates automatically", isOn: Binding(
+                    get: { UpdateManager.shared.automaticChecks },
+                    set: { UpdateManager.shared.automaticChecks = $0 }
+                ))
+                Text("Checks once per day. Updates are cryptographically signed — only genuine releases from us will install.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Button("Check for Updates Now") {
+                    UpdateManager.shared.checkForUpdates()
+                }
+                .disabled(!UpdateManager.shared.canCheckForUpdates)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
     // MARK: - About
 
     // MARK: - Subscription helpers
@@ -525,6 +560,14 @@ struct SettingsView: View {
             }
             .foregroundStyle(.tertiary)
 
+            Button {
+                showingFeedback = true
+            } label: {
+                Label("Send Feedback", systemImage: "paperplane.fill")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+
             Spacer()
 
             Text("© 2026 TalkIsCheap")
@@ -600,7 +643,6 @@ final class AudioDeviceList: ObservableObject {
     init() { refresh() }
 
     func refresh() {
-        // Simple approach using AVCaptureDevice
         let discoverySession = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone],
             mediaType: .audio,

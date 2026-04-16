@@ -10,6 +10,8 @@ __pycache__/
 .DS_Store
 TalkIsCheap/.build/
 TalkIsCheap/dist/
+TalkIsCheap/DB_ACCESS.md
+TalkIsCheap/Package.resolved
 _python_prototype/venv/
 *.pyc
 node_modules/

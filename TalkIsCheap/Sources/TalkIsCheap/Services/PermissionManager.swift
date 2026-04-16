@@ -18,8 +18,15 @@ enum PermissionManager {
                 DispatchQueue.main.async { completion(granted) }
             }
         default:
+            // Already denied — open System Settings so user can grant manually
+            openMicSettings()
             completion(false)
         }
+    }
+
+    /// Returns the current authorization status (useful for UI state)
+    static var micAuthorizationStatus: AVAuthorizationStatus {
+        AVCaptureDevice.authorizationStatus(for: .audio)
     }
 
     static func openMicSettings() {

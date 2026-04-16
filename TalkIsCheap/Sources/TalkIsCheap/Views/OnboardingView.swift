@@ -113,6 +113,24 @@ struct OnboardingView: View {
                         PermissionManager.requestMicPermission { granted in
                             micGranted = granted
                         }
+                        // Bring setup window back after System Settings opens (for denied case)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            NSApp.activate(ignoringOtherApps: true)
+                            for window in NSApp.windows where window.title == "TalkIsCheap Setup" {
+                                window.makeKeyAndOrderFront(nil)
+                            }
+                        }
+                        // Poll for grant
+                        var pollCount = 0
+                        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+                            pollCount += 1
+                            if PermissionManager.micPermissionGranted {
+                                micGranted = true
+                                timer.invalidate()
+                            } else if pollCount > 60 {
+                                timer.invalidate()
+                            }
+                        }
                     }
                 )
 
