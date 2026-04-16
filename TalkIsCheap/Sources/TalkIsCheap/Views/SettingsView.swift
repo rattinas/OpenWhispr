@@ -343,14 +343,14 @@ struct SettingsView: View {
                             }
                         }
                         Button {
-                            NSWorkspace.shared.open(URL(string: "https://talkischeap.app/checkout")!)
+                            NotificationCenter.default.post(name: .showPaywall, object: nil)
                         } label: {
-                            Label("Buy License — $19 Lifetime", systemImage: "cart.fill")
+                            Label("See Pricing Options", systemImage: "sparkles")
                                 .frame(maxWidth: .infinity)
                         }
                         .controlSize(.large)
                         .buttonStyle(.borderedProminent)
-                        .tint(.orange)
+                        .tint(.blue)
                     }
                 }
             }

@@ -78,13 +78,13 @@ struct MenuBarView: View {
                     .foregroundStyle(.orange)
 
                     Button {
-                        NSWorkspace.shared.open(URL(string: "https://talkischeap.app/checkout")!)
+                        NotificationCenter.default.post(name: .showPaywall, object: nil)
                     } label: {
-                        Label("Buy License — $19", systemImage: "cart")
+                        Label("Upgrade — from $9.99/mo or $19 lifetime", systemImage: "sparkles")
                             .font(.system(size: 11, weight: .semibold))
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.orange)
+                    .tint(.blue)
                     .controlSize(.small)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 6)
