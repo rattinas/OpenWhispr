@@ -67,6 +67,12 @@ mkdir -p "$APP_DIR/Contents/Frameworks"
 
 cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/TalkIsCheap"
 chmod +x "$APP_DIR/Contents/MacOS/TalkIsCheap"
+
+# SwiftPM sets rpath to @loader_path (= MacOS/). Add the standard macOS
+# framework search path so the binary finds Sparkle.framework in Frameworks/.
+# Must happen BEFORE codesign — changing rpath invalidates the signature.
+install_name_tool -add_rpath "@executable_path/../Frameworks" \
+  "$APP_DIR/Contents/MacOS/TalkIsCheap" 2>/dev/null || true
 cp Resources/*.png "$APP_DIR/Contents/Resources/" 2>/dev/null || true
 cp Resources/*.icns "$APP_DIR/Contents/Resources/" 2>/dev/null || true
 cp dist/TalkIsCheap.app/Contents/Info.plist "$APP_DIR/Contents/Info.plist"
