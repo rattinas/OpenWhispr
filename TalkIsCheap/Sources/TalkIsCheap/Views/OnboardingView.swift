@@ -214,8 +214,8 @@ struct OnboardingView: View {
                 )
                 planCard(
                     emoji: "💻",
-                    title: "Full offline mode",
-                    subtitle: "100% private. Downloads ~3.5GB of local AI models.",
+                    title: "Offline mode",
+                    subtitle: "Apple's on-device speech engine + Ollama polish (~2 GB). Fully private.",
                     selected: selectedPlan == "offline",
                     action: { selectedPlan = "offline" }
                 )

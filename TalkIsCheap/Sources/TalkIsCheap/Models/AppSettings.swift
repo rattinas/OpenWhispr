@@ -34,6 +34,9 @@ final class AppSettings: ObservableObject {
     // Audio dimming
     @AppStorage("dimAudioWhileRecording") var dimAudioWhileRecording: Bool = true
 
+    // Sound feedback (tink/pop/glass/basso when recording starts/stops/completes)
+    @AppStorage("soundFeedback") var soundFeedback: Bool = true
+
     // License & Activation
     @AppStorage("licenseKey") var licenseKey: String = ""
     @AppStorage("activationToken") var activationToken: String = ""

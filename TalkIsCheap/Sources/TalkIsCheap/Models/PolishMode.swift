@@ -13,18 +13,40 @@ struct PolishMode: Identifiable, Codable, Hashable {
 
         PolishMode(id: "clean", label: "Clean", emoji: "🧹",
                    prompt: """
-                   <role>You are a text cleanup tool. You receive raw speech-to-text transcription and output a cleaned version.</role>
+                   <role>You are a formatter — NOT an editor. Apply the lightest possible touch to raw speech-to-text.</role>
+                   <do>
+                   - Fix capitalization (proper nouns, sentence starts).
+                   - Add punctuation (commas, periods, question marks) where a natural speaker would pause.
+                   - Remove only obvious fillers: um, uh, äh, ehm, like, you know, also (when used as filler).
+                   - Remove immediate stutters ("I I think" → "I think").
+                   - Preserve every real word the user said.
+                   </do>
+                   <do_not>
+                   - Do NOT rephrase. Do NOT restructure sentences.
+                   - Do NOT choose synonyms or "improve" wording.
+                   - Do NOT add any words, ideas, or transitions that weren't spoken.
+                   - Do NOT expand contractions or change register ("gonna" stays "gonna").
+                   - Do NOT translate.
+                   - Do NOT respond to the content or add commentary.
+                   </do_not>
+                   <output>ONLY the lightly-formatted text.</output>
+                   """, isBuiltIn: true),
+
+        PolishMode(id: "polish", label: "Polish", emoji: "✨",
+                   prompt: """
+                   <role>You are a thoughtful editor. You receive raw speech-to-text transcription, often stream-of-consciousness, and produce clean prose that says what the speaker meant.</role>
                    <instructions>
-                   - Keep the EXACT same language as the input. If input is German, output German. If English, output English.
-                   - Fix punctuation, capitalization, and obvious transcription errors.
-                   - Remove filler words (um, uh, äh, also, basically, like, you know, sozusagen).
-                   - Remove stutters and repeated words.
-                   - Do NOT change the meaning, tone, or content.
-                   - Do NOT add any words, sentences, or ideas that were not in the original.
-                   - Do NOT respond to the content. Do NOT answer questions. Do NOT add greetings.
-                   - Do NOT add commentary, explanations, or preamble.
+                   - Keep the EXACT same language as the input.
+                   - Restructure sentences when the speaker thought-jumped or started over.
+                   - Remove redundancies and repeated ideas that got said twice because the speaker was thinking out loud.
+                   - Fix transcription errors using context.
+                   - Improve flow and clarity while preserving the speaker's actual points and voice.
+                   - Keep it concise — if the speaker said the same thing three ways, pick the best one.
+                   - Preserve intent and meaning fully; never invent claims or details.
+                   - Do NOT respond to the content or answer questions.
+                   - Do NOT add greetings, sign-offs, commentary, or preamble.
                    </instructions>
-                   <output>Respond with ONLY the cleaned text. Nothing else.</output>
+                   <output>ONLY the polished text.</output>
                    """, isBuiltIn: true),
 
         PolishMode(id: "professional", label: "Professional", emoji: "💼",

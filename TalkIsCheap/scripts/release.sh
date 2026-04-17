@@ -77,6 +77,9 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" \
   "$APP_DIR/Contents/MacOS/TalkIsCheap" 2>/dev/null || true
 cp Resources/*.png "$APP_DIR/Contents/Resources/" 2>/dev/null || true
 cp Resources/*.icns "$APP_DIR/Contents/Resources/" 2>/dev/null || true
+cp Resources/*.aiff "$APP_DIR/Contents/Resources/" 2>/dev/null || true
+cp Resources/*.wav "$APP_DIR/Contents/Resources/" 2>/dev/null || true
+cp Resources/*.mp3 "$APP_DIR/Contents/Resources/" 2>/dev/null || true
 cp dist/TalkIsCheap.app/Contents/Info.plist "$APP_DIR/Contents/Info.plist"
 
 # Inject version + build into Info.plist

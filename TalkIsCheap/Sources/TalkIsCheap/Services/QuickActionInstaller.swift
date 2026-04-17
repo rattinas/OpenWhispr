@@ -5,7 +5,7 @@ enum QuickActionInstaller {
     private static let servicesDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Services")
 
-    private static let workflowVersion = "4"  // bump to force reinstall on update
+    private static let workflowVersion = "5"  // bump to force reinstall on update
 
     /// Install Quick Actions (reinstalls if version changed)
     static func installIfNeeded() {
@@ -20,6 +20,18 @@ enum QuickActionInstaller {
 
         UserDefaults.standard.set(workflowVersion, forKey: "quickActionVersion")
         Log.write("Quick Actions installed to ~/Library/Services/")
+
+        // Ask LaunchServices / pbs to rebuild its Services cache so the
+        // freshly-installed workflows show up in Finder's right-click
+        // menu immediately — without this, macOS only picks them up after
+        // a login or when the service daemon randomly notices.
+        if forceReinstall {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/System/Library/CoreServices/pbs")
+            task.arguments = ["-update"]
+            try? task.run()
+            Log.write("pbs -update triggered")
+        }
     }
 
     private static func installWorkflow(name: String, script: String, force: Bool) {
@@ -32,7 +44,8 @@ enum QuickActionInstaller {
 
         try? fm.createDirectory(at: workflowDir, withIntermediateDirectories: true)
 
-        // Info.plist
+        // Info.plist — modern Services metadata so Finder actually shows the
+        // Quick Action on right-click for audio / video / document files.
         let plist = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -48,6 +61,23 @@ enum QuickActionInstaller {
                     </dict>
                     <key>NSMessage</key>
                     <string>runWorkflowAsService</string>
+                    <key>NSSendFileTypes</key>
+                    <array>
+                        <string>public.audio</string>
+                        <string>public.movie</string>
+                        <string>public.mpeg-4-audio</string>
+                        <string>public.mp3</string>
+                        <string>com.microsoft.waveform-audio</string>
+                        <string>com.apple.m4a-audio</string>
+                        <string>com.apple.quicktime-movie</string>
+                        <string>public.pdf</string>
+                        <string>org.openxmlformats.wordprocessingml.document</string>
+                    </array>
+                    <key>NSRequiredContext</key>
+                    <dict>
+                        <key>NSApplicationIdentifier</key>
+                        <string>com.apple.finder</string>
+                    </dict>
                 </dict>
             </array>
         </dict>

@@ -64,14 +64,16 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var offlineSetupRow: some View {
-        let whisperReady = FileManager.default.isExecutableFile(atPath: localSetup.venvPythonPath)
+        // Apple's SFSpeechRecognizer handles STT on-device — no download.
+        // Only Ollama needs installing for the polish step.
+        let ollamaInstalled = localSetup.isOllamaInstalled()
         let isInstalling: Bool = {
             if case .installing = localSetup.state { return true }
             return false
         }()
 
-        if whisperReady {
-            Label("Offline models ready", systemImage: "checkmark.circle.fill")
+        if ollamaInstalled {
+            Label("Ollama installed — ready to go", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .font(.caption)
         } else {
@@ -86,19 +88,16 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                         .font(.caption)
                 } else {
-                    Text("Offline needs ~3.5 GB of local models. Installation takes 5-10 minutes.")
+                    Text("Offline uses Apple's on-device speech engine (already built in) plus Ollama for polish (~2 GB). Transcription itself works without Ollama — you'd just get raw text without cleanup.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Button {
                     Task {
-                        await localSetup.setupLocalMode(
-                            needsSTT: settings.sttProvider == "local",
-                            needsPolish: settings.polishProvider == "ollama"
-                        )
+                        await localSetup.setupLocalMode(needsSTT: false, needsPolish: true)
                     }
                 } label: {
-                    Label(isInstalling ? "Installing…" : "Install offline models",
+                    Label(isInstalling ? "Installing…" : "Install Ollama for polish",
                           systemImage: "arrow.down.circle")
                 }
                 .disabled(isInstalling)
@@ -112,7 +111,7 @@ struct SettingsView: View {
                 Picker("Mode", selection: serviceMode) {
                     Text("☁️ Use our cloud — 10 free tries, then subscription").tag("cloud")
                     Text("🔑 My own API keys — free, unlimited").tag("byok")
-                    Text("💻 Fully offline — local models, 100% private").tag("offline")
+                    Text("💻 Offline — Apple's engine + Ollama polish, no cloud").tag("offline")
                 }
                 .pickerStyle(.inline)
                 .labelsHidden()
@@ -647,19 +646,41 @@ struct SettingsView: View {
     }
 
     private func openStripePortal() async {
-        guard var request = URLRequest(url: URL(string: "https://talkischeap.app/api/subscription/portal")!) as URLRequest? else { return }
+        var request = URLRequest(url: URL(string: "https://talkischeap.app/api/subscription/portal")!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(settings.activationToken)", forHTTPHeaderField: "Authorization")
         request.setValue(LicenseManager.hardwareUUID(), forHTTPHeaderField: "X-Hardware-Id")
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let urlStr = json["url"] as? String,
-               let url = URL(string: urlStr) {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let http = response as? HTTPURLResponse
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+
+            if http?.statusCode == 200, let urlStr = json?["url"] as? String, let url = URL(string: urlStr) {
                 NSWorkspace.shared.open(url)
+                return
             }
+
+            // Non-200 — show the server's error to the user instead of silently failing.
+            let serverMsg = (json?["error"] as? String) ?? "Status \(http?.statusCode ?? -1)"
+            Log.write("Portal open failed: \(serverMsg)")
+            await showPortalError(serverMsg)
         } catch {
             Log.write("Portal open failed: \(error)")
+            await showPortalError(error.localizedDescription)
+        }
+    }
+
+    @MainActor
+    private func showPortalError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn't open subscription portal"
+        alert.informativeText = "\(message)\n\nIf you just subscribed, give it a minute and try again. Otherwise: support@talkischeap.app"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Open account page")
+        let resp = alert.runModal()
+        if resp == .alertSecondButtonReturn, let url = URL(string: "https://talkischeap.app/account") {
+            NSWorkspace.shared.open(url)
         }
     }
 

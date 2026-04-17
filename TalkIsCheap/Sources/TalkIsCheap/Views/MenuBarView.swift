@@ -133,13 +133,10 @@ struct MenuBarView: View {
 
             Divider()
 
-            // Quick info — engine labels per mode
+            // Quick info — single-line engine label per mode
             HStack(spacing: 4) {
                 Image(systemName: transcribeEngineIcon).font(.system(size: 9))
                 Text(transcribeEngineLabel).font(.system(size: 10))
-                Text("→").font(.system(size: 9))
-                Image(systemName: settings.polishProvider == "anthropic" ? "cloud" : "desktopcomputer").font(.system(size: 9))
-                Text(settings.polishProvider == "anthropic" ? "Claude" : "Ollama").font(.system(size: 10))
                 Spacer()
                 if LicenseManager.isLicensed {
                     Text("Licensed").font(.system(size: 9, weight: .medium)).foregroundStyle(.green)
@@ -166,6 +163,11 @@ struct MenuBarView: View {
             }
 
             // Toggles
+            Toggle(isOn: $settings.soundFeedback) {
+                Label("Sound feedback", systemImage: "bell")
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+
             Toggle(isOn: $settings.dimAudioWhileRecording) {
                 Label("Dim audio while recording", systemImage: "speaker.wave.2")
             }
@@ -207,8 +209,8 @@ struct MenuBarView: View {
 
     private var transcribeEngineLabel: String {
         if settings.shouldUseProxy { return "TalkIsCheap Server" }
-        if settings.sttProvider == "local" { return "Apple (local)" }
-        return "Groq Whisper"
+        if settings.sttProvider == "local" { return "Apple + Ollama" }
+        return "Groq + Claude"
     }
 
     private var transcribeEngineIcon: String {

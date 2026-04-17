@@ -173,6 +173,7 @@ enum ProxyClient {
     struct SearchResult {
         let answer: String
         let sources: [(title: String, url: String, description: String)]
+        let images: [String]
     }
 
     static func search(query: String, language: String?) async throws -> SearchResult {
@@ -206,7 +207,8 @@ enum ProxyClient {
                     description: dict["description"] as? String ?? ""
                 )
             }
-            return SearchResult(answer: answer, sources: sourceList)
+            let images = (json["images"] as? [String]) ?? []
+            return SearchResult(answer: answer, sources: sourceList, images: images)
         }
         throw parseError(data: data, status: httpResponse.statusCode)
     }

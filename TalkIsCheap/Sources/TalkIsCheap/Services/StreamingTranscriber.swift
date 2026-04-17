@@ -32,16 +32,18 @@ final class StreamingTranscriber: NSObject, ObservableObject {
         finalizedText = ""
         lastPartial = ""
         isOpen = false
-        pendingAudio.removeAll()
+        // Do NOT clear pendingAudio here — it already holds the audio that
+        // arrived BEFORE start() was called (during token mint + network).
+        // Clearing would drop the first spoken word.
 
-        // Nova-3 supports language=multi which auto-detects and handles
-        // code-switching (denglish: "Let's do the ding mit dem Button"),
-        // English-only, and German-only uniformly. For users with an
-        // explicit non-English language we pin it for accuracy; everyone
-        // else gets multi.
+        // Pass the user's chosen language straight through. English-only and
+        // German-only Nova-3 models are noticeably more accurate on proper
+        // nouns ("Lyons", "Thursday") than the multi-language model. Only
+        // fall back to "multi" when the caller couldn't determine a
+        // specific language or the user explicitly wants code-switching.
         let effectiveLanguage: String
-        if let language, !["auto", "multi"].contains(language) {
-            effectiveLanguage = language == "en" ? "en" : "multi"
+        if let language, !language.isEmpty, !["auto", "multi"].contains(language) {
+            effectiveLanguage = language
         } else {
             effectiveLanguage = "multi"
         }
@@ -99,13 +101,15 @@ final class StreamingTranscriber: NSObject, ObservableObject {
     nonisolated func feed(buffer: AVAudioPCMBuffer) {
         guard let data = Self.bufferToLinear16(buffer) else { return }
         Task { @MainActor in
-            guard let task = self.task else { return }
+            // Always buffer audio, even before the WebSocket task exists — the
+            // subscriber-token mint runs in parallel with the first audio
+            // frames, so the first ~200-500 ms arrives while `task` is still
+            // nil. Dropping that audio was the "first word missing" bug.
             if !self.isOpen {
-                // Still handshaking — buffer until the WS opens.
                 self.pendingAudio.append(data)
                 return
             }
-            task.send(.data(data)) { error in
+            self.task?.send(.data(data)) { error in
                 if let error {
                     Log.write("Deepgram send error: \(error.localizedDescription)")
                 }
@@ -125,18 +129,18 @@ final class StreamingTranscriber: NSObject, ObservableObject {
             pendingAudio.removeAll()
         }
 
-        // Pad with 300ms of silence so Deepgram's VAD fires its end-of-utterance
-        // detector. Without this, the final 1-2 words are often missing because
-        // the server is still waiting for more speech when we ask it to close.
-        let silenceFrames = 16000 / 2 * MemoryLayout<Int16>.size / 10 * 3 // ~300ms @ 16 kHz mono int16
+        // Silence pad so Deepgram's VAD reliably fires the end-of-utterance
+        // detector. 300 ms is enough for even a hesitating tail — the server
+        // processes this as silence (no speech inference cost) so the added
+        // latency is mostly the 300 ms of audio itself.
+        let silenceFrames = 16000 * MemoryLayout<Int16>.size * 30 / 100 // 300 ms @ 16 kHz int16
         let silence = Data(count: silenceFrames)
         task.send(.data(silence)) { _ in }
 
         task.send(.string(#"{"type":"CloseStream"}"#)) { _ in }
 
-        // Wait up to 2.5s for the final utterance — Deepgram can take
-        // 500-1500ms to deliver the last segment after CloseStream, especially
-        // on longer recordings.
+        // Most finals arrive in 100-400 ms. 1 s is enough safety net without
+        // making the user wait forever in edge cases.
         let result = await withTaskGroup(of: String.self) { group -> String in
             group.addTask { @MainActor in
                 await withCheckedContinuation { cont in
@@ -144,7 +148,7 @@ final class StreamingTranscriber: NSObject, ObservableObject {
                 }
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
                 return ""
             }
             let first = await group.next() ?? ""
@@ -168,8 +172,18 @@ final class StreamingTranscriber: NSObject, ObservableObject {
         isStreaming = false
         isOpen = false
         pendingAudio.removeAll()
+        currentTranscript = ""
+        finalizedText = ""
+        lastPartial = ""
         closeContinuation?.resume(returning: "")
         closeContinuation = nil
+    }
+
+    /// Clear any pending audio that was captured before a failed mint.
+    /// Called by AppState when it falls back to a different pipeline so
+    /// the abandoned audio doesn't leak into the next recording.
+    func discardPendingAudio() {
+        pendingAudio.removeAll()
     }
 
     // MARK: - Receive loop

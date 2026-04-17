@@ -19,7 +19,7 @@ final class SearchPanelManager: ObservableObject {
     func show() {
         if panel == nil {
             let p = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 600, height: 480),
+                contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
                 styleMask: [.titled, .closable, .nonactivatingPanel, .hudWindow],
                 backing: .buffered,
                 defer: true
@@ -86,7 +86,7 @@ struct SearchResultView: View {
                 errorView(msg)
             }
         }
-        .frame(width: 600)
+        .frame(width: 760, height: 620)
     }
 
     // MARK: - Listening

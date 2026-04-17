@@ -31,55 +31,31 @@ final class PolisherService {
             """
         }
 
-        // The input came from a streaming speech-to-text engine (Deepgram /
-        // Apple). It ALWAYS contains some level of recognition error, and the
-        // mode prompts ("don't change meaning") would otherwise tell the
-        // model to preserve those errors. This block explicitly overrides
-        // that: error correction has priority over content preservation.
+        // Compact hint: the input is speech-to-text, so obvious misheard
+        // words may appear. Correcting them has priority over the
+        // "preserve meaning" rule in mode prompts.
         systemPrompt += """
 
-        <priority>
-        Rule A — fix obvious speech-recognition errors using context (HIGHEST PRIORITY).
-        Rule B — apply the style/tone instructions from the mode above.
-        Rule C — do not invent new content or change meaning.
+        <transcription>
+        Input is speech-to-text output. Silently fix obvious recognition
+        errors using context; correction wins over "preserve meaning" when
+        the intended word is unambiguous.
 
-        When A conflicts with B, A wins. When A conflicts with C, A still wins
-        for unambiguous recognition errors (homophones, misheard brand names).
-        </priority>
+        The speaker is often a German developer who drops English tech/
+        business words mid-sentence (Denglish). When a German-looking word
+        doesn't fit the sentence, assume it is a mis-transcribed English
+        word. Typical pattern: imminiert → immediate, deployen → deploy,
+        committen → commit, push-en → push, launchen → launch, kanzeln →
+        cancel, plänen → plannen, abfeature-t → featured.
 
-        <known_brand_corrections>
-        The following words are almost always recognition errors when they appear
-        in a tech/AI/software context. Correct them silently without commentary:
-        - "deep gram" / "deepcrime" / "deep crime"   → "Deepgram"
-        - "entropic" / "anthro pick" / "anthropics"  → "Anthropic"
-        - "clod" / "cloud" (when referring to the AI) → "Claude"
-        - "grok" / "grog" / "crock"                   → "Groq"
-        - "whisper flow"                              → "Wispr Flow"
-        - "open AI" (preserve space) and "chatgpt"   → keep as "OpenAI" / "ChatGPT"
-        - "spotifai"                                  → "Spotify"
-        </known_brand_corrections>
+        Tech-brand mishearings to fix: deep gram/deepcrime → Deepgram ·
+        entropic/anthropics → Anthropic · clod → Claude · grok/grog →
+        Groq · whisper flow → Wispr Flow · spotifai → Spotify.
 
-        <common_homophone_corrections>
-        Correct only when the surrounding context makes the intended word unambiguous:
-        English: there/their/they're, to/too/two, your/you're, its/it's,
-                 then/than, affect/effect, principal/principle.
-        German: das/dass, wie/als, seid/seit, das Meer/mehr.
-        </common_homophone_corrections>
-
-        <german_punctuation>
-        For German output, apply standard German comma rules:
-        - Comma before subordinate clauses introduced by dass/weil/obwohl/wenn/damit/usw.
-        - Comma between coordinated main clauses joined by und only when needed for clarity.
-        - Comma around inserted relative clauses.
-        Use real typographic quotes („…") for quotations, not straight quotes.
-        </german_punctuation>
-
-        <general_rules>
-        - Preserve the speaker's language (never translate).
-        - Keep the speaker's voice and register (formal/casual) as heard.
-        - Do not add greetings, sign-offs, commentary, or preamble.
-        - Output ONLY the polished text. Nothing else.
-        </general_rules>
+        Keep the speaker's language; never translate. Never add greetings,
+        sign-offs, commentary, or preamble.
+        Output ONLY the polished text.
+        </transcription>
         """
 
         // Inject custom dictionary context for better proper noun handling
@@ -88,25 +64,80 @@ final class PolisherService {
             systemPrompt += "\n\n<dictionary>\nThe user commonly uses these proper nouns, company names, or technical terms. Preserve them exactly and, if the engine mis-transcribed one, restore the correct form:\n\(dict)\n</dictionary>"
         }
 
-        // Pick the model based on the mode and text length. High-stakes modes
-        // (Professional, Marketing) and long texts (> 80 words) benefit from
-        // Sonnet 4.6; everything else uses Haiku 4.5 for speed. Users don't
-        // see this choice — we optimize internally.
-        let wordCount = text.split(separator: " ").count
-        let isHighStakes = ["professional", "marketing", "claude_prompt", "chatgpt_prompt"].contains(mode.id)
-        let useSonnet = isHighStakes || wordCount > 80
-        let claudeModel = useSonnet ? "claude-sonnet-4-6" : "claude-haiku-4-5-20251001"
+        // Model selection per mode, tuned for what each mode actually does:
+        //   - "clean" → light formatting only. Llama 3.1 8B Instant: tiny,
+        //     blazing fast (~1200 tok/s), perfect for the formatter role.
+        //   - "polish" → thoughtful rewrite of stream-of-consciousness. Claude
+        //     Haiku 4.5 handles nuance much better than small Llama.
+        //   - "coding" → precise technical text. Claude Sonnet 4.6.
+        //   - everything else (professional, marketing, email, casual,
+        //     prompt modes, custom) → Llama 3.3 70B as a solid default.
+        let polishModel: String
+        switch mode.id {
+        case "clean":
+            polishModel = "llama-3.1-8b-instant"
+        case "polish":
+            polishModel = "claude-haiku-4-5-20251001"
+        case "coding":
+            polishModel = "claude-sonnet-4-6"
+        default:
+            polishModel = "llama-3.3-70b-versatile"
+        }
 
-        // Pro / Trial users use our proxy
+        // Pro / Trial users use our proxy — the proxy routes to Anthropic
+        // or Groq based on the model name prefix.
         if settings.shouldUseProxy {
-            return try await ProxyClient.polish(text: text, systemPrompt: systemPrompt, model: claudeModel)
+            return try await ProxyClient.polish(text: text, systemPrompt: systemPrompt, model: polishModel)
         }
 
         if settings.polishProvider == "ollama" {
             return try await polishOllama(text: text, system: systemPrompt)
-        } else {
-            return try await polishClaude(text: text, system: systemPrompt, model: claudeModel)
         }
+
+        // BYOK direct path: Groq LLMs go to Groq, Claude models go to Anthropic.
+        if polishModel.hasPrefix("claude-") {
+            return try await polishClaude(text: text, system: systemPrompt, model: polishModel)
+        } else {
+            return try await polishGroq(text: text, system: systemPrompt, model: polishModel)
+        }
+    }
+
+    // MARK: - Groq LLM (fast polish via Llama)
+
+    private func polishGroq(text: String, system: String, model: String) async throws -> String {
+        let apiKey = AppSettings.shared.groqApiKey
+        guard !apiKey.isEmpty else {
+            Log.write("Polish (Groq): no Groq key — returning raw text")
+            return text
+        }
+
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": text]
+            ],
+            "max_tokens": 1024,
+            "temperature": 0.2,
+        ]
+
+        var request = URLRequest(url: URL(string: "https://api.groq.com/openai/v1/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 20
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let errorText = String(data: data, encoding: .utf8) ?? "Unknown"
+            throw PolisherError.apiError("Groq \((response as? HTTPURLResponse)?.statusCode ?? -1): \(errorText.prefix(200))")
+        }
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let choices = json["choices"] as? [[String: Any]] ?? []
+        let firstMessage = choices.first?["message"] as? [String: Any]
+        let content = firstMessage?["content"] as? String ?? text
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Anthropic Claude

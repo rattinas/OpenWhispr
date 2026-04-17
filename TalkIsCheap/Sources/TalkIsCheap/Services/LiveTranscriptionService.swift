@@ -14,7 +14,11 @@ final class LiveTranscriptionService: ObservableObject {
     @Published var isRunning: Bool = false
 
     private var recognizer: SFSpeechRecognizer?
-    private var request: SFSpeechAudioBufferRecognitionRequest?
+    // Accessed from the AVAudioEngine tap thread via `feed(buffer:)` — keep it
+    // nonisolated so audio buffers are appended synchronously, without
+    // hopping to the main actor (which would race with AVAudioEngine reusing
+    // its internal buffer storage).
+    private nonisolated(unsafe) var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
 
     // MARK: - Permission
@@ -81,11 +85,14 @@ final class LiveTranscriptionService: ObservableObject {
         }
     }
 
-    /// Feed a raw audio buffer (from AudioRecorder.onNativeBuffer).
+    /// Feed a raw audio buffer (from AudioRecorder.onNativeBuffer). Called
+    /// synchronously from the AVAudioEngine tap thread — we consume the
+    /// buffer immediately before returning, because AVAudioEngine reuses its
+    /// internal storage after the tap callback.
+    /// `SFSpeechAudioBufferRecognitionRequest.append` is thread-safe and
+    /// copies the audio internally, so calling it on the tap thread is fine.
     nonisolated func feed(buffer: AVAudioPCMBuffer) {
-        Task { @MainActor in
-            self.request?.append(buffer)
-        }
+        request?.append(buffer)
     }
 
     func stop() {

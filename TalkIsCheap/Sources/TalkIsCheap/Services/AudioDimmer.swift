@@ -9,8 +9,23 @@ final class AudioDimmer {
     private let dimFactor: Float32 = 0.15 // dim to 15% of original
 
     func dim() {
-        guard AppSettings.shared.dimAudioWhileRecording else { return }
-        guard let volume = getSystemVolume() else { return }
+        guard AppSettings.shared.dimAudioWhileRecording else {
+            Log.write("AudioDimmer: disabled in settings, skipping")
+            return
+        }
+        guard let volume = getSystemVolume() else {
+            // Fall back to AppleScript when CoreAudio won't expose the
+            // volume — this happens on AirPods / some Bluetooth outputs.
+            if let scripted = getVolumeViaAppleScript() {
+                originalVolume = scripted
+                let dimmed = max(0, min(1, scripted * dimFactor))
+                setVolumeViaAppleScript(dimmed)
+                Log.write("Audio dimmed (AppleScript): \(String(format: "%.0f", scripted * 100))% → \(String(format: "%.0f", dimmed * 100))%")
+            } else {
+                Log.write("AudioDimmer: could not read system volume via any path")
+            }
+            return
+        }
         originalVolume = volume
         let dimmed = volume * dimFactor
         setSystemVolume(dimmed)
@@ -18,10 +33,45 @@ final class AudioDimmer {
     }
 
     func restore() {
-        guard let original = originalVolume else { return }
-        setSystemVolume(original)
+        guard let original = originalVolume else {
+            Log.write("AudioDimmer: nothing to restore")
+            return
+        }
+        if getSystemVolume() != nil {
+            setSystemVolume(original)
+        } else {
+            setVolumeViaAppleScript(original)
+        }
         Log.write("Audio restored: \(String(format: "%.0f", original * 100))%")
         originalVolume = nil
+    }
+
+    // MARK: - AppleScript fallback (reliable on AirPods / Bluetooth)
+
+    private func getVolumeViaAppleScript() -> Float32? {
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", "output volume of (get volume settings)"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do { try task.run() } catch { return nil }
+        task.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let intValue = Int(str), intValue >= 0, intValue <= 100 else { return nil }
+        return Float32(intValue) / 100.0
+    }
+
+    private func setVolumeViaAppleScript(_ volume: Float32) {
+        let percent = Int(max(0, min(1, volume)) * 100)
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", "set volume output volume \(percent)"]
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
+        try? task.run()
+        // Detach — don't block the hotkey path waiting for osascript.
     }
 
     // MARK: - CoreAudio

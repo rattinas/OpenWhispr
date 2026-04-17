@@ -25,7 +25,7 @@ final class SearchService {
             let language = AppSettings.shared.language == "auto" ? nil : AppSettings.shared.language
             let proxyResult = try await ProxyClient.search(query: query, language: language)
             let sources = proxyResult.sources.map { SearchSource(title: $0.title, url: $0.url, thumbnail: nil) }
-            return SearchResult(query: query, answer: proxyResult.answer, sources: sources, images: [])
+            return SearchResult(query: query, answer: proxyResult.answer, sources: sources, images: proxyResult.images)
         }
 
         // 1. Get web + image results from Brave

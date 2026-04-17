@@ -102,6 +102,7 @@ final class AppState: ObservableObject {
         }
 
         Log.write("startRecording")
+        recordingBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         AudioDimmer.shared.dim()
         SoundFeedback.recordStart()
 
@@ -118,11 +119,21 @@ final class AppState: ObservableObject {
         let modeAtStartPrompt = modeManager.allModes.first { $0.id == modeAtStart }?.prompt
         let streamingWanted = modeAtStartIsFast && settings.shouldUseProxy && modeAtStartPrompt == nil
 
+        // Language pick, in order of preference:
+        //   1. User explicitly set a language in Settings → use that.
+        //   2. User is on "auto" → check the app-aware language store for
+        //      what they typically speak in the frontmost app (learned from
+        //      past dictations via NLLanguageRecognizer). Nails the common
+        //      case: DE user writing English in GitHub, DE in Slack.
+        //   3. No history yet → fall back to Deepgram's multi-language model.
         let streamingLanguage: String?
-        if settings.language == "auto" {
-            streamingLanguage = Locale.current.language.languageCode?.identifier ?? "en"
-        } else {
+        if settings.language != "auto" {
             streamingLanguage = settings.language
+        } else if let learned = LanguagePreferenceStore.shared.languageForFrontmostApp() {
+            streamingLanguage = learned
+            Log.write("Auto-language: using learned '\(learned)' for frontmost app")
+        } else {
+            streamingLanguage = nil // triggers "multi" in StreamingTranscriber
         }
 
         if streamingWanted {
@@ -147,37 +158,13 @@ final class AppState: ObservableObject {
             localeIdentifier: settings.language == "auto" ? nil : settings.language
         )
 
-        // Progressive pipeline: transcribe + polish the first 3s WHILE user still speaks.
-        // Skipped when Deepgram streaming is active — the streamer already does
-        // continuous transcription and the progressive path would double-bill.
+        // Progressive pipeline fully retired — its result was never used in
+        // the mode-aware flow and it was burning one extra transcribe+polish
+        // call per dictation.
         progressiveTask = nil
         progressiveResult = nil
         progressivePolished = nil
-        recorder.onChunkReady = useStreaming ? nil : { [weak self] chunkWav in
-            guard let self else { return }
-            let modeName = self.appAwareMode() ?? self.settings.activePolishMode
-            let mode = self.modeManager.allModes.first { $0.id == modeName } ?? PolishMode.builtIn[1]
-            let lang = self.settings.language == "auto" ? nil : self.settings.language
-            let dict = self.settings.customDictionary
-
-            Log.write("Progressive: transcribing + polishing first chunk...")
-            self.progressiveTask = Task {
-                do {
-                    // Step 1: Transcribe first 3 seconds
-                    let rawText = try await TranscriberService.shared.transcribe(wavData: chunkWav, language: lang)
-                    guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                    self.progressiveResult = rawText
-                    Log.write("Progressive transcribed: \(rawText.prefix(40))...")
-
-                    // Step 2: Polish immediately (don't wait for user to release!)
-                    let polished = try await PolisherService.shared.polish(text: rawText, mode: mode)
-                    self.progressivePolished = polished
-                    Log.write("Progressive polished: \(polished.prefix(40))... ✅ READY TO PASTE")
-                } catch {
-                    Log.write("Progressive pipeline failed: \(error)")
-                }
-            }
-        }
+        recorder.onChunkReady = nil
 
         recorder.start()
         status = .recording
@@ -187,6 +174,10 @@ final class AppState: ObservableObject {
     private var progressiveTask: Task<Void, Never>?
     private var progressiveResult: String?
     private var progressivePolished: String?
+
+    /// Captured at recording-start so the language-learning store updates
+    /// the RIGHT app even if the user alt-tabs after releasing the hotkey.
+    private var recordingBundleId: String?
 
     /// Shared tail of the pipeline: polish + paste + history + trial + done-status.
     /// Called with whatever raw transcript was produced — streaming (Deepgram),
@@ -229,6 +220,9 @@ final class AppState: ObservableObject {
 
         PasteService.paste(polished)
 
+        // Learn language preference for this app from what the user just said
+        LanguagePreferenceStore.shared.record(text: polished, bundleId: recordingBundleId)
+
         let duration = Date().timeIntervalSince(startTime)
         let finalWordCount = polished.split(separator: " ").count
         history.add(raw: rawText, polished: polished, mode: modeName, duration: duration)
@@ -257,19 +251,28 @@ final class AppState: ObservableObject {
     }
 
     func stopAndProcess() {
-        Log.write("stopAndProcess")
+        Log.write("stopAndProcess (tail capture …)")
         AudioDimmer.shared.restore()
         SoundFeedback.recordStop()
-        LiveTranscriptionService.shared.stop()
-        let wavData = recorder.stop()
-        let streamingActive = StreamingTranscriber.shared.isStreaming
-        Log.write("wav size: \(wavData.count)")
 
-        // Hide overlay immediately for speed perception
-        EqualizerOverlay.shared.hide()
-        status = .transcribing
+        // Keep capturing audio for a moment after the hotkey is released —
+        // users typically finish the last word while the key is already
+        // coming up, and macOS key events add another few tens of ms on
+        // top. 200 ms is the sweet spot between "feels snappy" and "the
+        // last word lands".
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000) // 200 ms
 
-        Task { await process(wavData: wavData, streamingActive: streamingActive) }
+            LiveTranscriptionService.shared.stop()
+            let wavData = self.recorder.stop()
+            let streamingActive = StreamingTranscriber.shared.isStreaming
+            Log.write("wav size: \(wavData.count)")
+
+            EqualizerOverlay.shared.hide()
+            status = .transcribing
+
+            Task { await self.process(wavData: wavData, streamingActive: streamingActive) }
+        }
     }
 
     private func process(wavData: Data, streamingActive: Bool = false) async {
@@ -301,6 +304,10 @@ final class AppState: ObservableObject {
                 text = LiveTranscriptionService.shared.liveText
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 Log.write("⚡ FAST/apple: \(text.count) chars")
+                // Streaming path was wanted but mint never happened. Clear
+                // the audio that got buffered while we waited so it doesn't
+                // leak into the next session.
+                StreamingTranscriber.shared.discardPendingAudio()
             }
 
             progressiveTask = nil
@@ -319,40 +326,17 @@ final class AppState: ObservableObject {
 
         // --- All polish modes below: Groq Whisper + Claude polish ---
 
+        // Progressive pipeline is disabled — it produced truncated output
+        // (only the first 1.5 s got pasted) and added cost/latency for no
+        // real win. Every polish-mode dictation now does a single clean
+        // transcribe → polish → paste pass.
+        progressiveTask?.cancel()
+        progressiveTask = nil
+        progressiveResult = nil
+        progressivePolished = nil
+
         do {
-            // ⚡ FAST PATH: If progressive pipeline already polished the text → paste IMMEDIATELY
-            if let polished = progressivePolished, !polished.isEmpty, approxSeconds <= 5.0 {
-                let rawText = progressiveResult ?? polished
-                Log.write("⚡ INSTANT PASTE (progressive pipeline ready, \(String(format: "%.1f", approxSeconds))s)")
-
-                PasteService.paste(polished)
-
-                let duration = Date().timeIntervalSince(startTime)
-                let wordCount = polished.split(separator: " ").count
-                history.add(raw: rawText, polished: polished, mode: modeName, duration: duration)
-                if !LicenseManager.isLicensed && settings.tier != "pro_monthly" && settings.tier != "pro_annual" {
-                    settings.trialUses += 1
-                }
-                SoundFeedback.done()
-                status = .done(wordCount: wordCount, duration: duration)
-                Log.write("Done: \(wordCount)w in \(String(format: "%.2f", duration))s (instant!)")
-                hideOverlayAfterDelay()
-
-                progressiveTask = nil
-                progressiveResult = nil
-                progressivePolished = nil
-                return
-            }
-
-            // Show "polishing" while we process — no early-paste (that caused duplicates).
-            // The progressive transcription we started during recording is still useful:
-            // by the time the user releases, the first chunk's transcribe+polish is often
-            // already done, so the final call is much faster.
-            if progressivePolished != nil && approxSeconds > 5.0 {
-                Log.write("Progressive chunk ready, finalizing full text…")
-                status = .polishing
-            }
-
+            status = .transcribing
             // Transcribe full audio for accuracy
             Log.write("Transcribing full \(String(format: "%.1f", approxSeconds))s (mode=\(modeName))…")
             let rawText = try await TranscriberService.shared.transcribe(
@@ -520,10 +504,18 @@ final class AppState: ObservableObject {
     // MARK: - App-Aware Context
 
     /// Returns a polish mode ID based on the frontmost app, or nil to use the user's selected mode.
-    /// Only overrides when the user has "clean" (default) selected — respects manual mode choices.
+    /// Overrides the default modes (clean, fast) only — respects manual mode choices
+    /// like "professional", "marketing", or custom scenarios.
     private func appAwareMode() -> String? {
-        guard settings.appAwareContext else { return nil }
-        guard settings.activePolishMode == "clean" else { return nil }
+        guard settings.appAwareContext else {
+            Log.write("App-aware: disabled in settings")
+            return nil
+        }
+        let active = settings.activePolishMode
+        guard active == "clean" || active == "fast" else {
+            Log.write("App-aware: skipping — user explicitly picked '\(active)' mode")
+            return nil
+        }
 
         guard let bundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return nil }
 
@@ -535,35 +527,100 @@ final class AppState: ObservableObject {
             "net.whatsapp.WhatsApp": "casual",
             "com.hnc.Discord": "casual",
             "com.facebook.archon.developerID": "casual",
+            "org.whispersystems.signal-desktop": "casual",
+            "com.readdle.SparkMac": "email",
+            "com.apple.iChat": "casual",
+            "im.riot.app": "casual",
 
             // Email → Email
             "com.apple.mail": "email",
             "com.google.Gmail": "email",
             "com.microsoft.Outlook": "email",
             "com.readdle.smartemail-macos": "email",
+            "com.airmail.airmail2": "email",
+            "it.bloop.airmail3": "email",
+            "com.freron.MailMate": "email",
 
             // IDEs & Code → Code
             "com.microsoft.VSCode": "coding",
+            "com.microsoft.VSCodeInsiders": "coding",
             "com.apple.dt.Xcode": "coding",
             "com.jetbrains.intellij": "coding",
+            "com.jetbrains.intellij.ce": "coding",
+            "com.jetbrains.pycharm": "coding",
+            "com.jetbrains.WebStorm": "coding",
+            "com.jetbrains.goland": "coding",
+            "com.jetbrains.rider": "coding",
+            "com.jetbrains.AndroidStudio": "coding",
             "com.sublimetext.4": "coding",
+            "com.sublimetext.3": "coding",
             "dev.zed.Zed": "coding",
+            "dev.zed.Zed-Preview": "coding",
             "com.todesktop.230313mzl4w4u92": "coding", // Cursor
+            "com.panic.Nova": "coding",
+            "com.github.atom": "coding",
+            "com.macromates.TextMate": "coding",
+            "com.github.GitHubClient": "coding",
+            "com.apple.Terminal": "coding",
+            "com.googlecode.iterm2": "coding",
+            "net.kovidgoyal.kitty": "coding",
+            "com.mitchellh.ghostty": "coding",
+            "co.zeit.hyper": "coding",
+            "dev.warp.Warp-Stable": "coding",
 
             // Business & Docs → Professional
             "com.apple.iWork.Pages": "professional",
             "com.apple.iWork.Keynote": "professional",
+            "com.apple.iWork.Numbers": "professional",
             "com.microsoft.Word": "professional",
             "com.microsoft.Powerpoint": "professional",
-            "com.google.Chrome": "professional",
+            "com.microsoft.Excel": "professional",
             "com.notion.id": "professional",
             "com.linear": "professional",
+            "md.obsidian": "professional",
+            "com.culturedcode.ThingsMac": "professional",
+            "com.todoist.mac.Todoist": "professional",
+            "com.apple.Notes": "professional",
+            "abnerworks.Typora": "professional",
+            "com.bohemiancoding.sketch3": "professional",
+
+            // Browsers → Professional (often used for web-based writing)
+            "com.google.Chrome": "professional",
+            "com.google.Chrome.beta": "professional",
+            "com.google.Chrome.dev": "professional",
+            "com.apple.Safari": "professional",
+            "org.mozilla.firefox": "professional",
+            "com.microsoft.edgemac": "professional",
+            "com.brave.Browser": "professional",
+            "company.thebrowser.Browser": "professional", // Arc
         ]
 
         if let mode = mapping[bundleId] {
             Log.write("App-aware: \(bundleId) → \(mode)")
             return mode
         }
+
+        // Fallback: fuzzy match on the bundle ID for apps we haven't explicitly
+        // mapped but whose name strongly hints at a category. Helps catch
+        // installer variants (beta channels, forks, VSCodium, JetBrains EAP).
+        let lower = bundleId.lowercased()
+        let codingHints = ["vscode", "vs-code", "xcode", "jetbrains", "cursor", "sublime", "zed", "textmate", "atom", "terminal", "iterm", "ghostty", "warp", "hyper", "kitty", "nova"]
+        if codingHints.contains(where: { lower.contains($0) }) {
+            Log.write("App-aware: fuzzy coding match for \(bundleId)")
+            return "coding"
+        }
+        let chatHints = ["slack", "discord", "telegram", "whatsapp", "signal", "imessage", "messages"]
+        if chatHints.contains(where: { lower.contains($0) }) {
+            Log.write("App-aware: fuzzy chat match for \(bundleId)")
+            return "casual"
+        }
+        let emailHints = ["mail", "outlook", "spark", "airmail"]
+        if emailHints.contains(where: { lower.contains($0) }) {
+            Log.write("App-aware: fuzzy email match for \(bundleId)")
+            return "email"
+        }
+
+        Log.write("App-aware: no mapping for \(bundleId) — using default '\(active)'")
         return nil
     }
 
