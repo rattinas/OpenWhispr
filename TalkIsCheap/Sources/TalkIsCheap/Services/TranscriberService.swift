@@ -4,15 +4,20 @@ import Foundation
 final class TranscriberService {
     static let shared = TranscriberService()
 
-    func transcribe(wavData: Data, language: String?) async throws -> String {
+    func transcribe(wavData: Data, language: String?, polishMode: String = "clean") async throws -> String {
         let settings = AppSettings.shared
         let dict = settings.customDictionary.isEmpty ? nil : settings.customDictionary
 
+        // Whisper model per polish mode: turbo (fast, ~96% accurate) for
+        // casual/short-text modes, large-v3 (precise on proper nouns + jargon)
+        // for professional/marketing/code/prompt modes where every word counts.
+        let highAccuracy = ["professional", "marketing", "code", "coding",
+                            "claude_prompt", "chatgpt_prompt"].contains(polishMode)
+        let whisperModel = highAccuracy ? "whisper-large-v3" : "whisper-large-v3-turbo"
+
         // Subscription users hit the cloud proxy fallback (non-streaming).
-        // This is the fallback path — normally streaming already delivered
-        // the transcript before we get here.
         if settings.shouldUseProxy {
-            return try await ProxyClient.transcribe(wavData: wavData, language: language, dictionary: dict)
+            return try await ProxyClient.transcribe(wavData: wavData, language: language, dictionary: dict, model: whisperModel)
         }
 
         // Offline: the live Apple transcript captured during recording IS the
@@ -27,12 +32,12 @@ final class TranscriberService {
         }
 
         // BYOK: Groq Whisper
-        return try await transcribeGroq(wavData: wavData, language: language, dictionary: dict)
+        return try await transcribeGroq(wavData: wavData, language: language, dictionary: dict, model: whisperModel)
     }
 
     // MARK: - Groq Cloud
 
-    private func transcribeGroq(wavData: Data, language: String?, dictionary: String? = nil) async throws -> String {
+    private func transcribeGroq(wavData: Data, language: String?, dictionary: String? = nil, model: String = "whisper-large-v3-turbo") async throws -> String {
         let apiKey = AppSettings.shared.groqApiKey
         guard !apiKey.isEmpty else {
             throw TranscriberError.noApiKey
@@ -54,7 +59,7 @@ final class TranscriberService {
 
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
-        body.append("whisper-large-v3\r\n".data(using: .utf8)!)
+        body.append("\(model)\r\n".data(using: .utf8)!)
 
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8)!)

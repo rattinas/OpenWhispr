@@ -59,18 +59,6 @@ final class AppSettings: ObservableObject {
     @AppStorage("activePolishMode") var activePolishMode: String = "clean"
     @AppStorage("appAwareContext") var appAwareContext: Bool = true
 
-    // Instant Paste: use Apple's on-device speech recognition as the final
-    // transcription (same text the user just saw in the live preview) and
-    // skip waiting for the cloud round-trip. Polish still runs in the
-    // background. Default on for perceived speed — users can opt out in
-    // Settings if they want Groq/Whisper accuracy for hard cases.
-    @AppStorage("instantPaste") var instantPaste: Bool = true
-
-    // High-Quality polish: use Claude Sonnet 4.6 instead of Haiku 4.5.
-    // Slower (~2x) but noticeably better on long, nuanced texts. Default off
-    // so the out-of-the-box experience stays snappy.
-    @AppStorage("highQualityPolish") var highQualityPolish: Bool = false
-
     static let languages: [(code: String, name: String)] = [
         ("auto", "Auto-Detect"),
         ("de", "Deutsch"),

@@ -135,29 +135,6 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section {
-                Toggle(isOn: $settings.highQualityPolish) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("High-quality polish (Claude Sonnet 4.6)")
-                        Text("~2x slower polish, noticeably better on long or nuanced texts.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-
-                Toggle(isOn: $settings.instantPaste) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Apple fallback when Deepgram unavailable")
-                        Text("If streaming isn't configured, use Apple's on-device engine instead of the slower Whisper round-trip.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("Speed & Quality")
-            } footer: {
-                Text("Default polish is Claude Haiku 4.5 — about 500-1000 ms. Sonnet 4.6 adds polish-quality but costs about 1 extra second per dictation.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
             Section("Speech Recognition") {
                 if !settings.useCloudProxy {
                     Picker("Engine", selection: $settings.sttProvider) {

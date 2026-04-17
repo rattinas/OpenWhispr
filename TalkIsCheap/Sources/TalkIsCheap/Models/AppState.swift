@@ -105,10 +105,19 @@ final class AppState: ObservableObject {
         AudioDimmer.shared.dim()
         SoundFeedback.recordStart()
 
-        // Deepgram streaming — ONLY for subscription users ("TalkIsCheap Server").
-        // BYOK + Offline users never hit Deepgram; this is our branded tech.
-        // The token is minted by our server right before we open the WebSocket,
-        // so the client never holds a long-lived Deepgram key.
+        // Decide transcription engine based on the ACTIVE POLISH MODE:
+        //   - Fast (no polish)  → Deepgram streaming for subscribers, Apple otherwise
+        //   - Any polish mode   → Groq Whisper + Claude polish
+        //
+        // This plays to each engine's strength: Deepgram for speed, Whisper
+        // for accuracy, Claude for polish. Deepgram is only used when the
+        // user doesn't need polish anyway — we don't waste it on modes where
+        // Whisper's better accuracy will win.
+        let modeAtStart = appAwareMode() ?? settings.activePolishMode
+        let modeAtStartIsFast = modeAtStart == "fast"
+        let modeAtStartPrompt = modeManager.allModes.first { $0.id == modeAtStart }?.prompt
+        let streamingWanted = modeAtStartIsFast && settings.shouldUseProxy && modeAtStartPrompt == nil
+
         let streamingLanguage: String?
         if settings.language == "auto" {
             streamingLanguage = Locale.current.language.languageCode?.identifier ?? "en"
@@ -116,17 +125,17 @@ final class AppState: ObservableObject {
             streamingLanguage = settings.language
         }
 
-        let useStreaming = settings.shouldUseProxy
-        if useStreaming {
+        if streamingWanted {
             Task { @MainActor in
                 do {
                     let token = try await ProxyClient.mintDeepgramToken()
                     StreamingTranscriber.shared.start(apiKey: token, language: streamingLanguage)
                 } catch {
-                    Log.write("TalkIsCheap Server token mint failed: \(error) — streaming skipped")
+                    Log.write("TalkIsCheap Server token mint failed: \(error) — Apple live preview will be used as fallback")
                 }
             }
         }
+        let useStreaming = streamingWanted
 
         recorder.onNativeBuffer = { buffer in
             LiveTranscriptionService.shared.feed(buffer: buffer)
@@ -192,15 +201,24 @@ final class AppState: ObservableObject {
         let skipPolish = activeMode.prompt == nil
             || (modeName == "clean" && wordCount <= 4)
 
+        // Apple's live-preview text often has different mistakes than Whisper —
+        // passing it as a second opinion helps Claude resolve ambiguous words
+        // ("Entropic" in Whisper vs "Anthropic" in Apple) using the intersection
+        // of both transcripts. Only include if it's meaningfully different.
+        let live = LiveTranscriptionService.shared.liveText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let liveHint = (!live.isEmpty && live != rawText && live.count > 5)
+            ? live : nil
+
         let polishStart = Date()
         let polished: String
         if skipPolish {
             Log.write("Polish: skipped (mode=\(modeName), \(wordCount)w)")
             polished = rawText
         } else {
-            Log.write("Polish: running (mode=\(modeName), \(wordCount)w) …")
+            Log.write("Polish: running (mode=\(modeName), \(wordCount)w\(liveHint != nil ? ", + live-hint" : "")) …")
             do {
-                polished = try await PolisherService.shared.polish(text: rawText, mode: activeMode)
+                polished = try await PolisherService.shared.polish(text: rawText, mode: activeMode, altTranscript: liveHint)
                 let polishDur = Date().timeIntervalSince(polishStart)
                 Log.write("Polish: done in \(String(format: "%.2f", polishDur))s, \(polished.count) chars")
             } catch {
@@ -257,36 +275,49 @@ final class AppState: ObservableObject {
     private func process(wavData: Data, streamingActive: Bool = false) async {
         let startTime = Date()
         let modeName = appAwareMode() ?? settings.activePolishMode
+        let activeMode = modeManager.allModes.first { $0.id == modeName } ?? PolishMode.builtIn[1]
+        let isFastMode = activeMode.prompt == nil
         let wavBytes = wavData.count
         let approxSeconds = Double(wavBytes) / (16000 * 4)
 
-        // ⚡⚡⚡ STREAMING PATH: Deepgram has been transcribing live while the
-        // user was speaking. On release we only wait for the tail (~100-200ms)
-        // and then run polish. No full re-transcription.
-        if streamingActive {
-            Log.write("⚡⚡⚡ STREAM: finalizing Deepgram transcript…")
-            let streamedText = await StreamingTranscriber.shared.finishAndCollect()
-            let trimmed = streamedText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                await finalize(rawText: trimmed, modeName: modeName, startTime: startTime)
-                return
+        // ⚡ FAST MODE — no polish. Use Deepgram's streamed transcript if we
+        // have one (subscriber path), otherwise Apple's live-preview text
+        // (BYOK/offline path). Paste immediately.
+        if isFastMode {
+            let text: String
+            if streamingActive {
+                Log.write("⚡ FAST/stream: finalizing Deepgram transcript…")
+                let streamed = await StreamingTranscriber.shared.finishAndCollect()
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !streamed.isEmpty {
+                    text = streamed
+                } else {
+                    // Stream produced nothing — fall back to Apple live text
+                    text = LiveTranscriptionService.shared.liveText
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    Log.write("⚡ FAST/stream empty → Apple fallback (\(text.count) chars)")
+                }
+            } else {
+                text = LiveTranscriptionService.shared.liveText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                Log.write("⚡ FAST/apple: \(text.count) chars")
             }
-            Log.write("STREAM: empty transcript — falling through to cloud path")
-        }
 
-        // ⚡⚡ FAST PATH: Apple's on-device transcription is already ready at
-        // release (streaming). Skip the Groq/Whisper round-trip entirely,
-        // send Apple's text straight to polish, then paste.
-        let liveText = LiveTranscriptionService.shared.liveText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if settings.instantPaste, !liveText.isEmpty, LiveTranscriptionService.isAuthorized {
-            Log.write("⚡⚡ FAST: Apple transcript (\(liveText.count) chars) → polish")
             progressiveTask = nil
             progressiveResult = nil
             progressivePolished = nil
-            await finalize(rawText: liveText, modeName: modeName, startTime: startTime)
+
+            guard !text.isEmpty else {
+                status = .error("No speech detected")
+                SoundFeedback.error()
+                hideOverlayAfterDelay()
+                return
+            }
+            await finalize(rawText: text, modeName: modeName, startTime: startTime)
             return
         }
+
+        // --- All polish modes below: Groq Whisper + Claude polish ---
 
         do {
             // ⚡ FAST PATH: If progressive pipeline already polished the text → paste IMMEDIATELY
@@ -323,10 +354,11 @@ final class AppState: ObservableObject {
             }
 
             // Transcribe full audio for accuracy
-            Log.write("Transcribing full \(String(format: "%.1f", approxSeconds))s...")
+            Log.write("Transcribing full \(String(format: "%.1f", approxSeconds))s (mode=\(modeName))…")
             let rawText = try await TranscriberService.shared.transcribe(
                 wavData: wavData,
-                language: settings.language == "auto" ? nil : settings.language
+                language: settings.language == "auto" ? nil : settings.language,
+                polishMode: modeName
             )
             progressiveTask = nil
             progressiveResult = nil

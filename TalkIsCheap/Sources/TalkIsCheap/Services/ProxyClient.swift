@@ -56,7 +56,7 @@ enum ProxyClient {
 
     // MARK: - Transcribe (Groq Whisper)
 
-    static func transcribe(wavData: Data, language: String?, dictionary: String?) async throws -> String {
+    static func transcribe(wavData: Data, language: String?, dictionary: String?, model: String = "whisper-large-v3-turbo") async throws -> String {
         guard var request = buildRequest(path: "/transcribe") else {
             throw ProxyError.networkError("Invalid URL")
         }
@@ -77,7 +77,7 @@ enum ProxyClient {
         // model
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
-        body.append("whisper-large-v3\r\n".data(using: .utf8)!)
+        body.append("\(model)\r\n".data(using: .utf8)!)
 
         // response_format
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -140,16 +140,13 @@ enum ProxyClient {
 
     // MARK: - Polish (Claude Haiku)
 
-    static func polish(text: String, systemPrompt: String) async throws -> String {
+    static func polish(text: String, systemPrompt: String, model: String) async throws -> String {
         guard var request = buildRequest(path: "/polish") else {
             throw ProxyError.networkError("Invalid URL")
         }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 30
 
-        let model = AppSettings.shared.highQualityPolish
-            ? "claude-sonnet-4-6"
-            : "claude-haiku-4-5-20251001"
         let body: [String: Any] = [
             "model": model,
             "max_tokens": 1024,

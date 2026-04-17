@@ -34,9 +34,22 @@ final class StreamingTranscriber: NSObject, ObservableObject {
         isOpen = false
         pendingAudio.removeAll()
 
+        // Nova-3 supports language=multi which auto-detects and handles
+        // code-switching (denglish: "Let's do the ding mit dem Button"),
+        // English-only, and German-only uniformly. For users with an
+        // explicit non-English language we pin it for accuracy; everyone
+        // else gets multi.
+        let effectiveLanguage: String
+        if let language, !["auto", "multi"].contains(language) {
+            effectiveLanguage = language == "en" ? "en" : "multi"
+        } else {
+            effectiveLanguage = "multi"
+        }
+
         var components = URLComponents(string: "wss://api.deepgram.com/v1/listen")!
-        var query: [URLQueryItem] = [
+        let query: [URLQueryItem] = [
             URLQueryItem(name: "model", value: "nova-3"),
+            URLQueryItem(name: "language", value: effectiveLanguage),
             URLQueryItem(name: "encoding", value: "linear16"),
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "channels", value: "1"),
@@ -44,9 +57,6 @@ final class StreamingTranscriber: NSObject, ObservableObject {
             URLQueryItem(name: "smart_format", value: "true"),
             URLQueryItem(name: "punctuate", value: "true"),
         ]
-        if let language, language != "auto" {
-            query.append(URLQueryItem(name: "language", value: language))
-        }
         components.queryItems = query
 
         var request = URLRequest(url: components.url!)
@@ -105,9 +115,8 @@ final class StreamingTranscriber: NSObject, ObservableObject {
 
     func finishAndCollect() async -> String {
         guard let task else { return currentTranscript }
-        // If we never opened, flush the buffered audio one last time before
-        // asking the server to finalize. (This can happen on very short
-        // recordings.)
+
+        // Flush any audio still queued from before the WS opened.
         if !isOpen && !pendingAudio.isEmpty {
             Log.write("Deepgram: flushing \(pendingAudio.count) buffers before close")
             for data in pendingAudio {
@@ -116,8 +125,18 @@ final class StreamingTranscriber: NSObject, ObservableObject {
             pendingAudio.removeAll()
         }
 
+        // Pad with 300ms of silence so Deepgram's VAD fires its end-of-utterance
+        // detector. Without this, the final 1-2 words are often missing because
+        // the server is still waiting for more speech when we ask it to close.
+        let silenceFrames = 16000 / 2 * MemoryLayout<Int16>.size / 10 * 3 // ~300ms @ 16 kHz mono int16
+        let silence = Data(count: silenceFrames)
+        task.send(.data(silence)) { _ in }
+
         task.send(.string(#"{"type":"CloseStream"}"#)) { _ in }
 
+        // Wait up to 2.5s for the final utterance — Deepgram can take
+        // 500-1500ms to deliver the last segment after CloseStream, especially
+        // on longer recordings.
         let result = await withTaskGroup(of: String.self) { group -> String in
             group.addTask { @MainActor in
                 await withCheckedContinuation { cont in
@@ -125,7 +144,7 @@ final class StreamingTranscriber: NSObject, ObservableObject {
                 }
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
                 return ""
             }
             let first = await group.next() ?? ""

@@ -4,7 +4,7 @@ import Foundation
 final class PolisherService {
     static let shared = PolisherService()
 
-    func polish(text: String, mode: PolishMode, extraContext: String = "") async throws -> String {
+    func polish(text: String, mode: PolishMode, extraContext: String = "", altTranscript: String? = nil) async throws -> String {
         // Raw mode = no polishing
         guard let prompt = mode.prompt else { return text }
 
@@ -12,6 +12,23 @@ final class PolisherService {
         var systemPrompt = prompt
         if !extraContext.isEmpty {
             systemPrompt += "\n" + extraContext
+        }
+
+        // Second-opinion transcript (from a different engine) helps the model
+        // resolve ambiguous words. Where both transcripts agree, use that word.
+        // Where they differ, pick the one that makes sense in context.
+        if let alt = altTranscript, !alt.isEmpty {
+            systemPrompt += """
+
+            <alt_transcript>
+            A second speech-to-text engine transcribed the same audio as this:
+            \(alt)
+
+            Use it as a hint when the primary transcript (the USER message below)
+            has an obviously misheard word. Do not merge the two transcripts —
+            output the corrected version of the primary transcript only.
+            </alt_transcript>
+            """
         }
 
         // The input came from a streaming speech-to-text engine (Deepgram /
@@ -71,30 +88,35 @@ final class PolisherService {
             systemPrompt += "\n\n<dictionary>\nThe user commonly uses these proper nouns, company names, or technical terms. Preserve them exactly and, if the engine mis-transcribed one, restore the correct form:\n\(dict)\n</dictionary>"
         }
 
+        // Pick the model based on the mode and text length. High-stakes modes
+        // (Professional, Marketing) and long texts (> 80 words) benefit from
+        // Sonnet 4.6; everything else uses Haiku 4.5 for speed. Users don't
+        // see this choice — we optimize internally.
+        let wordCount = text.split(separator: " ").count
+        let isHighStakes = ["professional", "marketing", "claude_prompt", "chatgpt_prompt"].contains(mode.id)
+        let useSonnet = isHighStakes || wordCount > 80
+        let claudeModel = useSonnet ? "claude-sonnet-4-6" : "claude-haiku-4-5-20251001"
+
         // Pro / Trial users use our proxy
         if settings.shouldUseProxy {
-            return try await ProxyClient.polish(text: text, systemPrompt: systemPrompt)
+            return try await ProxyClient.polish(text: text, systemPrompt: systemPrompt, model: claudeModel)
         }
 
         if settings.polishProvider == "ollama" {
             return try await polishOllama(text: text, system: systemPrompt)
         } else {
-            return try await polishClaude(text: text, system: systemPrompt)
+            return try await polishClaude(text: text, system: systemPrompt, model: claudeModel)
         }
     }
 
     // MARK: - Anthropic Claude
 
-    private func polishClaude(text: String, system: String) async throws -> String {
+    private func polishClaude(text: String, system: String, model: String) async throws -> String {
         let apiKey = AppSettings.shared.anthropicApiKey
         guard !apiKey.isEmpty else {
             Log.write("Polish: no Anthropic key — returning raw text (set key in Settings → API Keys, or enable Cloud mode)")
             return text
         }
-
-        let model = AppSettings.shared.highQualityPolish
-            ? "claude-sonnet-4-6"
-            : "claude-haiku-4-5-20251001"
 
         let requestBody: [String: Any] = [
             "model": model,
