@@ -5,7 +5,7 @@ enum QuickActionInstaller {
     private static let servicesDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Services")
 
-    private static let workflowVersion = "5"  // bump to force reinstall on update
+    private static let workflowVersion = "6"  // bump to force reinstall on update
 
     /// Install Quick Actions (reinstalls if version changed)
     static func installIfNeeded() {
@@ -149,7 +149,7 @@ enum QuickActionInstaller {
                             <key>CheckedForUserDefaultShell</key>
                             <true/>
                             <key>inputMethod</key>
-                            <integer>0</integer>
+                            <integer>1</integer>
                             <key>shell</key>
                             <string>/bin/bash</string>
                             <key>source</key>
@@ -200,12 +200,25 @@ enum QuickActionInstaller {
         try? wflow.write(to: workflowDir.appendingPathComponent("document.wflow"), atomically: true, encoding: .utf8)
     }
 
-    // Simple scripts — write path to temp file, open URL scheme.
-    // No complex bash needed — avoids XML escaping issues in Automator workflows.
-    // These scripts run inside Automator's Run Shell Script action.
-    // They write the file path to a temp file, then trigger the URL scheme.
-    // Kept as simple single-line bash to avoid XML escaping nightmares.
-    private static let transcribeScript = #"for f in "$@"; do echo "$f" > /tmp/.talkischeap_path; /usr/bin/open "talkischeap://transcribe-file"; done"#
+    // Service invocation passes paths over stdin (one per line) — NOT as
+    // shell args. inputMethod=1 in the Automator action is stdin; $@ would
+    // be empty and previously silently swallowed the path. For robustness
+    // we also honour args when present.
+    private static let transcribeScript = #"""
+    while IFS= read -r f; do
+      [ -n "$f" ] && echo "$f" > /tmp/.talkischeap_path && /usr/bin/open "talkischeap://transcribe-file"
+    done
+    for f in "$@"; do
+      [ -n "$f" ] && echo "$f" > /tmp/.talkischeap_path && /usr/bin/open "talkischeap://transcribe-file"
+    done
+    """#
 
-    private static let transcribeSummarizeScript = #"for f in "$@"; do echo "$f" > /tmp/.talkischeap_path; /usr/bin/open "talkischeap://transcribe-summarize-file"; done"#
+    private static let transcribeSummarizeScript = #"""
+    while IFS= read -r f; do
+      [ -n "$f" ] && echo "$f" > /tmp/.talkischeap_path && /usr/bin/open "talkischeap://transcribe-summarize-file"
+    done
+    for f in "$@"; do
+      [ -n "$f" ] && echo "$f" > /tmp/.talkischeap_path && /usr/bin/open "talkischeap://transcribe-summarize-file"
+    done
+    """#
 }
