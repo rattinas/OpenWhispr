@@ -141,9 +141,13 @@ struct WaveShape: Shape {
 
 /// Floating panel window at bottom center of screen
 final class EqualizerPanel: NSPanel {
+    // Wider than the cassette so we can show live-preview text above it
+    static let panelWidth: CGFloat = 440
+    static let panelHeight: CGFloat = 80
+
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 62, height: 42),
+            contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: true
@@ -152,10 +156,11 @@ final class EqualizerPanel: NSPanel {
         level = .floating
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        hasShadow = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         isMovableByWindowBackground = false
         hidesOnDeactivate = false
+        ignoresMouseEvents = true
     }
 
     func positionAtBottom() {
@@ -201,23 +206,55 @@ final class EqualizerOverlay: ObservableObject {
 /// The SwiftUI content inside the floating panel
 private struct CassetteOverlayContent: View {
     @ObservedObject var state = AppState.shared
-
     @ObservedObject var settings = AppSettings.shared
+    @ObservedObject var live = LiveTranscriptionService.shared
 
     var body: some View {
-        CassetteView(isActive: state.status == .recording)
-            .opacity(settings.cassetteOpacity)
-            .shadow(color: .black.opacity(0.3 * settings.cassetteOpacity), radius: 6, y: 3)
+        VStack(spacing: 6) {
+            // Live-preview bubble — shows on-device SFSpeechRecognizer text
+            // while the cloud pipeline runs in parallel. Collapses when empty
+            // so the overlay is just the cassette.
+            if state.status == .recording, !live.liveText.isEmpty {
+                Text(live.liveText)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .truncationMode(.head)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.black.opacity(0.72))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                    )
+                    .frame(maxWidth: 420)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            } else if case .transcribing = state.status {
+                statusBubble("Transcribing…")
+            } else if case .polishing = state.status {
+                statusBubble("Polishing…")
+            }
+
+            CassetteView(isActive: state.status == .recording)
+                .opacity(settings.cassetteOpacity)
+                .shadow(color: .black.opacity(0.3 * settings.cassetteOpacity), radius: 6, y: 3)
+        }
+        .animation(.easeOut(duration: 0.15), value: live.liveText)
+        .animation(.easeOut(duration: 0.15), value: state.status)
+        .frame(width: EqualizerPanel.panelWidth, height: EqualizerPanel.panelHeight, alignment: .bottom)
     }
 
-    private var statusLabel: String {
-        switch state.status {
-        case .recording: return "Recording..."
-        case .transcribing: return "Transcribing..."
-        case .polishing: return "Polishing..."
-        case .done(let w, let d): return "\(w)w · \(String(format: "%.1f", d))s ✓"
-        case .error(let m): return m
-        default: return ""
-        }
+    private func statusBubble(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.white.opacity(0.85))
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.black.opacity(0.55))
+            )
     }
 }

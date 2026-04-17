@@ -112,6 +112,32 @@ enum ProxyClient {
         throw parseError(data: data, status: httpResponse.statusCode)
     }
 
+    // MARK: - Deepgram token (TalkIsCheap Server)
+
+    /// Mints a short-lived Deepgram scoped key via our server. The client uses
+    /// the returned token to open a WebSocket directly to Deepgram — audio
+    /// never passes through our server. Each call counts as one dictation.
+    static func mintDeepgramToken() async throws -> String {
+        guard var request = buildRequest(path: "/deepgram-token") else {
+            throw ProxyError.networkError("Invalid URL")
+        }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 8
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ProxyError.networkError("Invalid response")
+        }
+        if http.statusCode == 200 {
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            guard let token = json?["token"] as? String, !token.isEmpty else {
+                throw ProxyError.serverError("Missing token in response")
+            }
+            return token
+        }
+        throw parseError(data: data, status: http.statusCode)
+    }
+
     // MARK: - Polish (Claude Haiku)
 
     static func polish(text: String, systemPrompt: String) async throws -> String {
@@ -121,8 +147,11 @@ enum ProxyClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 30
 
+        let model = AppSettings.shared.highQualityPolish
+            ? "claude-sonnet-4-6"
+            : "claude-haiku-4-5-20251001"
         let body: [String: Any] = [
-            "model": "claude-haiku-4-5-20251001",
+            "model": model,
             "max_tokens": 1024,
             "system": systemPrompt,
             "messages": [["role": "user", "content": text]]

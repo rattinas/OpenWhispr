@@ -123,20 +123,20 @@ struct MenuBarView: View {
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
 
-            Button {
-                openWindow(id: "settings")
-                NSApp.activate(ignoringOtherApps: true)
-            } label: {
+            SettingsLink {
                 Label("Settings", systemImage: "gear")
             }
+            .simultaneousGesture(TapGesture().onEnded {
+                NSApp.activate(ignoringOtherApps: true)
+            })
             .padding(.horizontal, 8).padding(.vertical, 4)
 
             Divider()
 
-            // Quick info
+            // Quick info — engine labels per mode
             HStack(spacing: 4) {
-                Image(systemName: settings.sttProvider == "groq" ? "cloud" : "desktopcomputer").font(.system(size: 9))
-                Text(settings.sttProvider == "groq" ? "Groq" : "Local").font(.system(size: 10))
+                Image(systemName: transcribeEngineIcon).font(.system(size: 9))
+                Text(transcribeEngineLabel).font(.system(size: 10))
                 Text("→").font(.system(size: 9))
                 Image(systemName: settings.polishProvider == "anthropic" ? "cloud" : "desktopcomputer").font(.system(size: 9))
                 Text(settings.polishProvider == "anthropic" ? "Claude" : "Ollama").font(.system(size: 10))
@@ -203,6 +203,18 @@ struct MenuBarView: View {
             .padding(.horizontal, 8).padding(.vertical, 4)
         }
         .frame(width: 270)
+    }
+
+    private var transcribeEngineLabel: String {
+        if settings.shouldUseProxy { return "TalkIsCheap Server" }
+        if settings.sttProvider == "local" { return "Apple (local)" }
+        return "Groq Whisper"
+    }
+
+    private var transcribeEngineIcon: String {
+        if settings.shouldUseProxy { return "sparkles" }
+        if settings.sttProvider == "local" { return "desktopcomputer" }
+        return "cloud"
     }
 
     @ViewBuilder

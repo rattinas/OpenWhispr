@@ -14,11 +14,9 @@ struct TalkIsCheapApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("TalkIsCheap Settings", id: "settings") {
+        Settings {
             SettingsView()
         }
-        .windowResizability(.contentSize)
-        .defaultPosition(.center)
 
         Window("TalkIsCheap Setup", id: "onboarding") {
             OnboardingView()
@@ -53,6 +51,16 @@ final class StartupManager: ObservableObject {
         // minus the DMG branch, and shows onboarding as a normal first launch).
         if InstallationHelper.moveToApplicationsIfFromDMG() {
             return
+        }
+
+        // Pre-warm HTTP to Groq / Anthropic / our proxy so the first dictation
+        // doesn't pay for TLS handshake.
+        ConnectionWarmer.prewarm()
+
+        // Request speech-recognition permission quietly in the background. Used
+        // for the live preview in the cassette overlay.
+        LiveTranscriptionService.requestAuthorization { granted in
+            Log.write("Live-preview speech auth: \(granted ? "granted" : "denied")")
         }
 
         // Permissions — only log status, don't prompt on every launch

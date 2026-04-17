@@ -11,8 +11,12 @@ final class AudioRecorder: ObservableObject {
     /// Callback fired every `chunkInterval` seconds with the WAV data so far.
     /// Used for progressive transcription (Spotify-style pre-loading).
     var onChunkReady: ((Data) -> Void)?
+    /// Called for each raw PCM buffer at native sample rate. Consumers like
+    /// `LiveTranscriptionService` (Apple SFSpeechRecognizer) use this for
+    /// real-time preview without doing their own audio capture.
+    var onNativeBuffer: ((AVAudioPCMBuffer) -> Void)?
     private var chunkTimer: Timer?
-    private let chunkInterval: TimeInterval = 3.0 // fire first chunk after 3s
+    private let chunkInterval: TimeInterval = 1.5 // fire first chunk after 1.5s so short recordings benefit from progressive pipeline too
     private var chunkFired = false
 
     func start() {
@@ -38,6 +42,9 @@ final class AudioRecorder: ObservableObject {
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { [weak self] buffer, _ in
             guard let self else { return }
+
+            // Fan out the raw native-format buffer to consumers like SFSpeechRecognizer.
+            self.onNativeBuffer?(buffer)
 
             let ratio = self.targetSampleRate / nativeFormat.sampleRate
             let outputFrameCount = AVAudioFrameCount(Double(buffer.frameLength) * ratio)

@@ -46,20 +46,29 @@ enum PasteService {
 
     /// Simulate Cmd+V using CGEvent (requires Accessibility permission)
     private static func simulatePaste() -> Bool {
+        return sendCmdKey(virtualKey: 0x09) // 'V'
+    }
+
+    /// Undo the previous paste (Cmd+Z) before pasting `text`. Used when a
+    /// progressive early-paste needs to be replaced by the final full text
+    /// without leaving a duplicate in the target field.
+    static func replacePreviousPaste(with text: String) {
+        // Undo the previous paste
+        _ = sendCmdKey(virtualKey: 0x06) // 'Z'
+        usleep(40_000)
+        paste(text)
+    }
+
+    @discardableResult
+    private static func sendCmdKey(virtualKey: CGKeyCode) -> Bool {
         guard AXIsProcessTrusted() else { return false }
-
-        let vKeyCode: CGKeyCode = 0x09 // 'V' key
-
-        guard let cmdDown = CGEvent(keyboardEventSource: nil, virtualKey: vKeyCode, keyDown: true),
-              let cmdUp = CGEvent(keyboardEventSource: nil, virtualKey: vKeyCode, keyDown: false)
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: virtualKey, keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: virtualKey, keyDown: false)
         else { return false }
-
-        cmdDown.flags = .maskCommand
-        cmdUp.flags = .maskCommand
-
-        cmdDown.post(tap: .cghidEventTap)
-        cmdUp.post(tap: .cghidEventTap)
-
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
         return true
     }
 }

@@ -8,16 +8,26 @@ final class TranscriberService {
         let settings = AppSettings.shared
         let dict = settings.customDictionary.isEmpty ? nil : settings.customDictionary
 
-        // Use our cloud proxy for Trial + Pro users
+        // Subscription users hit the cloud proxy fallback (non-streaming).
+        // This is the fallback path — normally streaming already delivered
+        // the transcript before we get here.
         if settings.shouldUseProxy {
             return try await ProxyClient.transcribe(wavData: wavData, language: language, dictionary: dict)
         }
 
+        // Offline: the live Apple transcript captured during recording IS the
+        // transcription. No Whisper model download needed.
         if settings.sttProvider == "local" {
-            return try await transcribeLocal(wavData: wavData, language: language)
-        } else {
-            return try await transcribeGroq(wavData: wavData, language: language, dictionary: dict)
+            let liveText = await MainActor.run {
+                LiveTranscriptionService.shared.liveText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if !liveText.isEmpty { return liveText }
+            throw TranscriberError.localNotSetup
         }
+
+        // BYOK: Groq Whisper
+        return try await transcribeGroq(wavData: wavData, language: language, dictionary: dict)
     }
 
     // MARK: - Groq Cloud

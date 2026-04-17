@@ -1,13 +1,13 @@
 #!/usr/bin/env swift
-// Renders dmg-background.png (540x380 @2x = 1080x760) used by create-dmg.
-// Clean, modern design: warm off-white, subtle vignette, arrow + hint text.
+// Renders dmg-background.png (480x400 @2x) used by create-dmg.
+// Single-action install UX: app icon centered, clear text below.
 
 import AppKit
 import CoreGraphics
 
-let W: CGFloat = 540
-let H: CGFloat = 380
-let scale: CGFloat = 2  // retina
+let W: CGFloat = 480
+let H: CGFloat = 400
+let scale: CGFloat = 2
 
 let pxW = Int(W * scale)
 let pxH = Int(H * scale)
@@ -25,8 +25,8 @@ guard let ctx = CGContext(
 
 ctx.scaleBy(x: scale, y: scale)
 
-// Background: soft warm gradient (top slightly lighter)
-let bg1 = CGColor(red: 0.98, green: 0.97, blue: 0.95, alpha: 1)
+// Warm off-white gradient background
+let bg1 = CGColor(red: 0.99, green: 0.98, blue: 0.97, alpha: 1)
 let bg2 = CGColor(red: 0.94, green: 0.93, blue: 0.91, alpha: 1)
 if let gradient = CGGradient(
     colorsSpace: colorSpace,
@@ -41,70 +41,52 @@ if let gradient = CGGradient(
     )
 }
 
-// Subtle horizontal rule
-ctx.setStrokeColor(red: 0.85, green: 0.84, blue: 0.82, alpha: 0.6)
-ctx.setLineWidth(0.5)
-ctx.move(to: CGPoint(x: 40, y: H - 70))
-ctx.addLine(to: CGPoint(x: W - 40, y: H - 70))
-ctx.strokePath()
-
-// Use NSGraphicsContext for text so we can use AppKit string drawing
 let nsGraphicsContext = NSGraphicsContext(cgContext: ctx, flipped: false)
 NSGraphicsContext.saveGraphicsState()
 NSGraphicsContext.current = nsGraphicsContext
 
-// Title
-let titleColor = NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.14, alpha: 1)
+// ─── Title at top (centered) ─────────────────────────────
+// Finder y=40 from top → CG y = H-40 = 360
 let title = "TalkIsCheap"
 let titleAttrs: [NSAttributedString.Key: Any] = [
-    .font: NSFont.systemFont(ofSize: 22, weight: .semibold),
-    .foregroundColor: titleColor,
-    .kern: 0.2,
+    .font: NSFont.systemFont(ofSize: 24, weight: .semibold),
+    .foregroundColor: NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.14, alpha: 1),
+    .kern: 0.3,
 ]
 let titleSize = (title as NSString).size(withAttributes: titleAttrs)
 (title as NSString).draw(
-    at: CGPoint(x: (W - titleSize.width) / 2, y: H - 50),
+    at: CGPoint(x: (W - titleSize.width) / 2, y: 340),
     withAttributes: titleAttrs
 )
 
-// Hint text below the icons
-let hintColor = NSColor(calibratedRed: 0.45, green: 0.44, blue: 0.42, alpha: 1)
-let hint = "Drag TalkIsCheap into the Applications folder"
+// ─── Primary instruction (below icon + filename label) ──────
+// Icon lives at Finder y=150, size 112 → icon bottom y=206, filename label ~y=225.
+// Place instruction at Finder y=275 → CG y = 400-275 = 125.
+let instruction = "Double-click to install"
+let instructionAttrs: [NSAttributedString.Key: Any] = [
+    .font: NSFont.systemFont(ofSize: 20, weight: .semibold),
+    .foregroundColor: NSColor(calibratedRed: 0.15, green: 0.35, blue: 0.75, alpha: 1),
+    .kern: 0.3,
+]
+let instructionSize = (instruction as NSString).size(withAttributes: instructionAttrs)
+(instruction as NSString).draw(
+    at: CGPoint(x: (W - instructionSize.width) / 2, y: 110),
+    withAttributes: instructionAttrs
+)
+
+// ─── Secondary hint ───────────────────────────────────
+// Finder y=330 → CG y = 70
+let hint = "I'll move myself to Applications and start setup"
 let hintAttrs: [NSAttributedString.Key: Any] = [
     .font: NSFont.systemFont(ofSize: 13, weight: .regular),
-    .foregroundColor: hintColor,
+    .foregroundColor: NSColor(calibratedRed: 0.45, green: 0.44, blue: 0.42, alpha: 1),
     .kern: 0.1,
 ]
 let hintSize = (hint as NSString).size(withAttributes: hintAttrs)
 (hint as NSString).draw(
-    at: CGPoint(x: (W - hintSize.width) / 2, y: 40),
+    at: CGPoint(x: (W - hintSize.width) / 2, y: 70),
     withAttributes: hintAttrs
 )
-
-// Arrow between icon positions (roughly x=140 and x=400, y≈190)
-let arrowY: CGFloat = 190
-let arrowStartX: CGFloat = 210
-let arrowEndX: CGFloat = 330
-let arrowColor = NSColor(calibratedRed: 0.55, green: 0.52, blue: 0.48, alpha: 0.85)
-arrowColor.setStroke()
-arrowColor.setFill()
-
-let arrowPath = NSBezierPath()
-arrowPath.lineWidth = 2
-arrowPath.lineCapStyle = .round
-arrowPath.move(to: CGPoint(x: arrowStartX, y: arrowY))
-arrowPath.line(to: CGPoint(x: arrowEndX, y: arrowY))
-arrowPath.stroke()
-
-// Arrowhead
-let head = NSBezierPath()
-head.lineWidth = 2
-head.lineCapStyle = .round
-head.lineJoinStyle = .round
-head.move(to: CGPoint(x: arrowEndX - 10, y: arrowY + 6))
-head.line(to: CGPoint(x: arrowEndX, y: arrowY))
-head.line(to: CGPoint(x: arrowEndX - 10, y: arrowY - 6))
-head.stroke()
 
 NSGraphicsContext.restoreGraphicsState()
 

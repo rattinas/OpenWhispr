@@ -10,18 +10,31 @@ enum InstallationHelper {
     static func moveToApplicationsIfFromDMG() -> Bool {
         let bundleURL = Bundle.main.bundleURL
         let path = bundleURL.path
+        Log.write("LetsMove: bundle at \(path)")
 
         // Skip if already installed in either /Applications or ~/Applications
-        if path.hasPrefix("/Applications/") { return false }
+        if path.hasPrefix("/Applications/") { Log.write("LetsMove: already in /Applications"); return false }
         let userApps = NSHomeDirectory() + "/Applications/"
-        if path.hasPrefix(userApps) { return false }
+        if path.hasPrefix(userApps) { Log.write("LetsMove: already in ~/Applications"); return false }
 
-        // Only trigger from a mounted volume (DMG / USB / network share)
-        guard path.hasPrefix("/Volumes/") else { return false }
+        // Accept both /Volumes/ and /private/var/folders/.../AppTranslocation/ (Gatekeeper translocation)
+        let isFromVolume = path.hasPrefix("/Volumes/")
+        let isTranslocated = path.contains("/AppTranslocation/")
+        guard isFromVolume || isTranslocated else {
+            Log.write("LetsMove: not from DMG (path does not start with /Volumes/ or AppTranslocation)")
+            return false
+        }
 
-        // Ensure alert is visible even though we're an LSUIElement app
+        Log.write("LetsMove: from DMG → showing consent alert")
+
+        // Switch to regular policy + grab focus. LSUIElement apps often can't
+        // steal focus on their own, so we also request user attention (bouncing
+        // dock icon) so the dialog is impossible to miss.
         NSApp.setActivationPolicy(.regular)
+        // Tiny delay so the Dock icon registers before we activate / bounce
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         NSApp.activate(ignoringOtherApps: true)
+        let bounceID = NSApp.requestUserAttention(.criticalRequest)
 
         let alert = NSAlert()
         alert.messageText = "Move TalkIsCheap to Applications?"
@@ -30,10 +43,16 @@ enum InstallationHelper {
         alert.addButton(withTitle: "Don't Move")
         alert.alertStyle = .informational
 
+        Log.write("LetsMove: running alert modal")
         let response = alert.runModal()
+        NSApp.cancelUserAttentionRequest(bounceID)
+        Log.write("LetsMove: alert dismissed, response=\(response.rawValue)")
         NSApp.setActivationPolicy(.accessory)
 
-        guard response == .alertFirstButtonReturn else { return false }
+        guard response == .alertFirstButtonReturn else {
+            Log.write("LetsMove: user declined")
+            return false
+        }
 
         return moveAndRelaunch(from: bundleURL)
     }

@@ -33,24 +33,155 @@ struct SettingsView: View {
 
     // MARK: - General
 
+    private var serviceMode: Binding<String> {
+        Binding(
+            get: {
+                if settings.useCloudProxy { return "cloud" }
+                if settings.sttProvider == "local" { return "offline" }
+                return "byok"
+            },
+            set: { newValue in
+                switch newValue {
+                case "cloud":
+                    settings.useCloudProxy = true
+                    settings.sttProvider = "groq"
+                    settings.polishProvider = "anthropic"
+                case "byok":
+                    settings.useCloudProxy = false
+                    settings.sttProvider = "groq"
+                    settings.polishProvider = "anthropic"
+                case "offline":
+                    settings.useCloudProxy = false
+                    settings.sttProvider = "local"
+                    settings.polishProvider = "ollama"
+                default: break
+                }
+            }
+        )
+    }
+
+    @ObservedObject private var localSetup = LocalSetupService.shared
+
+    @ViewBuilder
+    private var offlineSetupRow: some View {
+        let whisperReady = FileManager.default.isExecutableFile(atPath: localSetup.venvPythonPath)
+        let isInstalling: Bool = {
+            if case .installing = localSetup.state { return true }
+            return false
+        }()
+
+        if whisperReady {
+            Label("Offline models ready", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.caption)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                if case .installing(let step) = localSetup.state {
+                    HStack(spacing: 8) {
+                        ProgressView().scaleEffect(0.5).frame(width: 16, height: 16)
+                        Text(step).font(.caption).foregroundStyle(.secondary)
+                    }
+                } else if case .error(let msg) = localSetup.state {
+                    Label(msg, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                } else {
+                    Text("Offline needs ~3.5 GB of local models. Installation takes 5-10 minutes.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Button {
+                    Task {
+                        await localSetup.setupLocalMode(
+                            needsSTT: settings.sttProvider == "local",
+                            needsPolish: settings.polishProvider == "ollama"
+                        )
+                    }
+                } label: {
+                    Label(isInstalling ? "Installing…" : "Install offline models",
+                          systemImage: "arrow.down.circle")
+                }
+                .disabled(isInstalling)
+            }
+        }
+    }
+
     private var generalTab: some View {
         Form {
+            Section {
+                Picker("Mode", selection: serviceMode) {
+                    Text("☁️ Use our cloud — 10 free tries, then subscription").tag("cloud")
+                    Text("🔑 My own API keys — free, unlimited").tag("byok")
+                    Text("💻 Fully offline — local models, 100% private").tag("offline")
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+
+                if settings.useCloudProxy && settings.tier == "trial" {
+                    Label("\(settings.trialUsesRemaining) of 10 free uses left",
+                          systemImage: "gift")
+                        .foregroundStyle(.blue)
+                        .font(.caption)
+                }
+
+                // Offline setup — show when user picks offline and venv/ollama are missing
+                if !settings.useCloudProxy && settings.sttProvider == "local" {
+                    offlineSetupRow
+                }
+            } header: {
+                Text("Service")
+            } footer: {
+                Text("Switch anytime. Trial uses are only counted when the cloud mode is active.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle(isOn: $settings.highQualityPolish) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("High-quality polish (Claude Sonnet 4.6)")
+                        Text("~2x slower polish, noticeably better on long or nuanced texts.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                Toggle(isOn: $settings.instantPaste) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Apple fallback when Deepgram unavailable")
+                        Text("If streaming isn't configured, use Apple's on-device engine instead of the slower Whisper round-trip.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Speed & Quality")
+            } footer: {
+                Text("Default polish is Claude Haiku 4.5 — about 500-1000 ms. Sonnet 4.6 adds polish-quality but costs about 1 extra second per dictation.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("Speech Recognition") {
-                Picker("Engine", selection: $settings.sttProvider) {
-                    Text("☁️ Groq (fast, recommended)").tag("groq")
-                    Text("💻 Local Whisper (offline)").tag("local")
+                if !settings.useCloudProxy {
+                    Picker("Engine", selection: $settings.sttProvider) {
+                        Text("☁️ Groq (fast, recommended)").tag("groq")
+                        Text("💻 Local Whisper (offline)").tag("local")
+                    }
                 }
                 Picker("Language", selection: $settings.language) {
                     ForEach(AppSettings.languages, id: \.code) { lang in
                         Text(lang.name).tag(lang.code)
                     }
                 }
+                if settings.useCloudProxy {
+                    Text("Engine is managed by our cloud while you use the cloud plan. Switch to 'My own API keys' or 'Fully offline' above to change.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
 
-            Section("Text Polishing") {
-                Picker("Engine", selection: $settings.polishProvider) {
-                    Text("☁️ Anthropic Claude (recommended)").tag("anthropic")
-                    Text("💻 Ollama (local)").tag("ollama")
+            if !settings.useCloudProxy {
+                Section("Text Polishing") {
+                    Picker("Engine", selection: $settings.polishProvider) {
+                        Text("☁️ Anthropic Claude (recommended)").tag("anthropic")
+                        Text("💻 Ollama (local)").tag("ollama")
+                    }
                 }
             }
 
@@ -179,9 +310,9 @@ struct SettingsView: View {
                      destination: URL(string: "https://console.groq.com/keys")!)
                     .font(.caption)
             } header: {
-                Text("Groq (Speech Recognition)")
+                Text("Groq (Speech-to-Text)")
             } footer: {
-                Text("Free. Groq runs Whisper large-v3 for fast, accurate transcription.")
+                Text("Whisper large-v3-turbo — very fast and accurate. Free tier is generous.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -358,8 +489,13 @@ struct SettingsView: View {
                 }
             }
 
-            if !LicenseManager.isLicensed {
-                Section("Activate License") {
+            // Show activate-input whenever the user is not on a paid tier.
+            // Trial users still have an activation token, but they need to be
+            // able to enter a purchased key to upgrade. Only hide once they're
+            // on lifetime / pro.
+            let isPaidTier = settings.tier == "lifetime" || settings.tier == "pro_monthly" || settings.tier == "pro_annual"
+            if !isPaidTier {
+                Section {
                     TextField("TIC-XXXXX-XXXXX-XXXXX-XXXXX", text: $licenseInput)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
@@ -403,6 +539,11 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(msg.isError ? .red : .green)
                     }
+                } header: {
+                    Text("Activate License")
+                } footer: {
+                    Text("Already bought? Enter your key here — it will replace your trial.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 Section("Manage License") {
@@ -481,6 +622,12 @@ struct SettingsView: View {
 
     // MARK: - About
 
+    private var appVersionString: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
+        return "\(short) (\(build))"
+    }
+
     // MARK: - Subscription helpers
 
     private var tierIcon: String {
@@ -540,15 +687,22 @@ struct SettingsView: View {
     }
 
     private var aboutTab: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             Spacer()
-            Image(systemName: "mic.circle.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(.blue)
+
+            Image(nsImage: NSApp.applicationIconImage ?? NSImage())
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 96, height: 96)
+                .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+
             Text("TalkIsCheap")
                 .font(.system(size: 24, weight: .bold, design: .rounded))
-            Text("Version 2.0.0")
+
+            Text("Version \(appVersionString)")
                 .font(.caption).foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
             Text("Voice-to-text dictation for macOS")
                 .foregroundStyle(.secondary)
 
@@ -570,8 +724,17 @@ struct SettingsView: View {
 
             Spacer()
 
-            Text("© 2026 TalkIsCheap")
-                .font(.caption2).foregroundStyle(.quaternary)
+            VStack(spacing: 2) {
+                HStack(spacing: 4) {
+                    Text("Built by Benedikt Rapp")
+                    Text("·")
+                    Text("Made in Switzerland 🇨🇭")
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+
+                Text("© 2026 TalkIsCheap")
+                    .font(.caption2).foregroundStyle(.quaternary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

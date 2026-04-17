@@ -105,12 +105,46 @@ final class AppState: ObservableObject {
         AudioDimmer.shared.dim()
         SoundFeedback.recordStart()
 
+        // Deepgram streaming — ONLY for subscription users ("TalkIsCheap Server").
+        // BYOK + Offline users never hit Deepgram; this is our branded tech.
+        // The token is minted by our server right before we open the WebSocket,
+        // so the client never holds a long-lived Deepgram key.
+        let streamingLanguage: String?
+        if settings.language == "auto" {
+            streamingLanguage = Locale.current.language.languageCode?.identifier ?? "en"
+        } else {
+            streamingLanguage = settings.language
+        }
+
+        let useStreaming = settings.shouldUseProxy
+        if useStreaming {
+            Task { @MainActor in
+                do {
+                    let token = try await ProxyClient.mintDeepgramToken()
+                    StreamingTranscriber.shared.start(apiKey: token, language: streamingLanguage)
+                } catch {
+                    Log.write("TalkIsCheap Server token mint failed: \(error) — streaming skipped")
+                }
+            }
+        }
+
+        recorder.onNativeBuffer = { buffer in
+            LiveTranscriptionService.shared.feed(buffer: buffer)
+            if useStreaming {
+                StreamingTranscriber.shared.feed(buffer: buffer)
+            }
+        }
+        LiveTranscriptionService.shared.start(
+            localeIdentifier: settings.language == "auto" ? nil : settings.language
+        )
+
         // Progressive pipeline: transcribe + polish the first 3s WHILE user still speaks.
-        // When user releases, if this is done → paste IMMEDIATELY. Zero wait time.
+        // Skipped when Deepgram streaming is active — the streamer already does
+        // continuous transcription and the progressive path would double-bill.
         progressiveTask = nil
         progressiveResult = nil
         progressivePolished = nil
-        recorder.onChunkReady = { [weak self] chunkWav in
+        recorder.onChunkReady = useStreaming ? nil : { [weak self] chunkWav in
             guard let self else { return }
             let modeName = self.appAwareMode() ?? self.settings.activePolishMode
             let mode = self.modeManager.allModes.first { $0.id == modeName } ?? PolishMode.builtIn[1]
@@ -145,6 +179,50 @@ final class AppState: ObservableObject {
     private var progressiveResult: String?
     private var progressivePolished: String?
 
+    /// Shared tail of the pipeline: polish + paste + history + trial + done-status.
+    /// Called with whatever raw transcript was produced — streaming (Deepgram),
+    /// on-device (Apple), or cloud (Groq/Whisper).
+    private func finalize(rawText: String, modeName: String, startTime: Date) async {
+        status = .polishing
+        let activeMode = modeManager.allModes.first { $0.id == modeName } ?? PolishMode.builtIn[1]
+
+        // Skip polish for very short utterances in clean mode, and for the
+        // "fast" mode which explicitly means no polish.
+        let wordCount = rawText.split(separator: " ").count
+        let skipPolish = activeMode.prompt == nil
+            || (modeName == "clean" && wordCount <= 4)
+
+        let polishStart = Date()
+        let polished: String
+        if skipPolish {
+            Log.write("Polish: skipped (mode=\(modeName), \(wordCount)w)")
+            polished = rawText
+        } else {
+            Log.write("Polish: running (mode=\(modeName), \(wordCount)w) …")
+            do {
+                polished = try await PolisherService.shared.polish(text: rawText, mode: activeMode)
+                let polishDur = Date().timeIntervalSince(polishStart)
+                Log.write("Polish: done in \(String(format: "%.2f", polishDur))s, \(polished.count) chars")
+            } catch {
+                Log.write("Polish: failed \(error) — using raw text")
+                polished = rawText
+            }
+        }
+
+        PasteService.paste(polished)
+
+        let duration = Date().timeIntervalSince(startTime)
+        let finalWordCount = polished.split(separator: " ").count
+        history.add(raw: rawText, polished: polished, mode: modeName, duration: duration)
+        if !LicenseManager.isLicensed && settings.tier != "pro_monthly" && settings.tier != "pro_annual" {
+            settings.trialUses += 1
+        }
+        SoundFeedback.done()
+        status = .done(wordCount: finalWordCount, duration: duration)
+        Log.write("Done: \(finalWordCount)w in \(String(format: "%.2f", duration))s")
+        hideOverlayAfterDelay()
+    }
+
     func cancelRecording() {
         guard case .recording = status else { return }
         Log.write("cancelRecording (short tap)")
@@ -152,6 +230,8 @@ final class AppState: ObservableObject {
         progressiveTask = nil
         progressiveResult = nil
         progressivePolished = nil
+        LiveTranscriptionService.shared.stop()
+        StreamingTranscriber.shared.cancel()
         _ = recorder.stop()
         AudioDimmer.shared.restore()
         status = .ready
@@ -162,21 +242,51 @@ final class AppState: ObservableObject {
         Log.write("stopAndProcess")
         AudioDimmer.shared.restore()
         SoundFeedback.recordStop()
+        LiveTranscriptionService.shared.stop()
         let wavData = recorder.stop()
+        let streamingActive = StreamingTranscriber.shared.isStreaming
         Log.write("wav size: \(wavData.count)")
 
         // Hide overlay immediately for speed perception
         EqualizerOverlay.shared.hide()
         status = .transcribing
 
-        Task { await process(wavData: wavData) }
+        Task { await process(wavData: wavData, streamingActive: streamingActive) }
     }
 
-    private func process(wavData: Data) async {
+    private func process(wavData: Data, streamingActive: Bool = false) async {
         let startTime = Date()
         let modeName = appAwareMode() ?? settings.activePolishMode
         let wavBytes = wavData.count
         let approxSeconds = Double(wavBytes) / (16000 * 4)
+
+        // ⚡⚡⚡ STREAMING PATH: Deepgram has been transcribing live while the
+        // user was speaking. On release we only wait for the tail (~100-200ms)
+        // and then run polish. No full re-transcription.
+        if streamingActive {
+            Log.write("⚡⚡⚡ STREAM: finalizing Deepgram transcript…")
+            let streamedText = await StreamingTranscriber.shared.finishAndCollect()
+            let trimmed = streamedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                await finalize(rawText: trimmed, modeName: modeName, startTime: startTime)
+                return
+            }
+            Log.write("STREAM: empty transcript — falling through to cloud path")
+        }
+
+        // ⚡⚡ FAST PATH: Apple's on-device transcription is already ready at
+        // release (streaming). Skip the Groq/Whisper round-trip entirely,
+        // send Apple's text straight to polish, then paste.
+        let liveText = LiveTranscriptionService.shared.liveText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if settings.instantPaste, !liveText.isEmpty, LiveTranscriptionService.isAuthorized {
+            Log.write("⚡⚡ FAST: Apple transcript (\(liveText.count) chars) → polish")
+            progressiveTask = nil
+            progressiveResult = nil
+            progressivePolished = nil
+            await finalize(rawText: liveText, modeName: modeName, startTime: startTime)
+            return
+        }
 
         do {
             // ⚡ FAST PATH: If progressive pipeline already polished the text → paste IMMEDIATELY
@@ -203,12 +313,13 @@ final class AppState: ObservableObject {
                 return
             }
 
-            // ⚡ PROGRESSIVE PATH: For long recordings (>5s), paste first chunk NOW, then replace with full version
-            if let earlyPolished = progressivePolished, !earlyPolished.isEmpty, approxSeconds > 5.0 {
-                Log.write("⚡ PROGRESSIVE: pasting first chunk immediately, full version coming...")
-                PasteService.paste(earlyPolished)
-                SoundFeedback.done()
-                status = .polishing // Show "polishing" while we process the rest
+            // Show "polishing" while we process — no early-paste (that caused duplicates).
+            // The progressive transcription we started during recording is still useful:
+            // by the time the user releases, the first chunk's transcribe+polish is often
+            // already done, so the final call is much faster.
+            if progressivePolished != nil && approxSeconds > 5.0 {
+                Log.write("Progressive chunk ready, finalizing full text…")
+                status = .polishing
             }
 
             // Transcribe full audio for accuracy
@@ -229,18 +340,27 @@ final class AppState: ObservableObject {
                 return
             }
 
-            // Polish
-            Log.write("Polishing [\(modeName)]...")
+            // Polish — but skip for very short transcripts on "clean" mode to save 500-1000ms.
+            // For casual short phrases ("Hallo wie geht's"), polish barely changes anything and
+            // the perceived speed win matters more than the formatting touch-ups.
+            let wordCount = rawText.split(separator: " ").count
+            let shouldSkipPolish = modeName == "clean" && wordCount <= 4
+
+            Log.write("Polishing [\(modeName)]... \(shouldSkipPolish ? "(skipped — short text)" : "")")
             status = .polishing
             let activeMode = modeManager.allModes.first { $0.id == modeName } ?? PolishMode.builtIn[1]
 
             let polished: String
-            do {
-                polished = try await PolisherService.shared.polish(text: rawText, mode: activeMode)
-            } catch {
-                // If polishing fails, use raw text
-                Log.write("Polish failed: \(error), using raw text")
+            if shouldSkipPolish {
                 polished = rawText
+            } else {
+                do {
+                    polished = try await PolisherService.shared.polish(text: rawText, mode: activeMode)
+                } catch {
+                    // If polishing fails, use raw text
+                    Log.write("Polish failed: \(error), using raw text")
+                    polished = rawText
+                }
             }
             Log.write("POLISHED: \(polished.prefix(80))...")
 
@@ -249,7 +369,7 @@ final class AppState: ObservableObject {
 
             // Track
             let duration = Date().timeIntervalSince(startTime)
-            let wordCount = polished.split(separator: " ").count
+            let finalWordCount = polished.split(separator: " ").count
 
             history.add(raw: rawText, polished: polished, mode: modeName, duration: duration)
 
@@ -258,10 +378,28 @@ final class AppState: ObservableObject {
             }
 
             SoundFeedback.done()
-            status = .done(wordCount: wordCount, duration: duration)
-            Log.write("Done: \(wordCount)w in \(String(format: "%.1f", duration))s")
+            status = .done(wordCount: finalWordCount, duration: duration)
+            Log.write("Done: \(finalWordCount)w in \(String(format: "%.1f", duration))s")
             hideOverlayAfterDelay()
 
+        } catch let err as ProxyClient.ProxyError {
+            Log.write("PROXY ERROR: \(err)")
+            SoundFeedback.error()
+            switch err {
+            case .paymentRequired:
+                status = .error("Trial used up — opening paywall…")
+                NotificationCenter.default.post(name: .showPaywall, object: nil)
+            case .quotaExceeded(_, let limit, _, _):
+                status = .error("Monthly limit \(limit) reached — upgrade")
+                NotificationCenter.default.post(name: .showPaywall, object: nil)
+            case .unauthorized:
+                status = .error("License invalid — reactivate in Settings")
+            case .networkError:
+                status = .error("No internet — check connection")
+            case .serverError(let msg):
+                status = .error(String(msg.prefix(50)))
+            }
+            hideOverlayAfterDelay()
         } catch {
             Log.write("ERROR: \(error)")
             SoundFeedback.error()

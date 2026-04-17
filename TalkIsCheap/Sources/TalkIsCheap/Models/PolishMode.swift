@@ -8,7 +8,7 @@ struct PolishMode: Identifiable, Codable, Hashable {
     var isBuiltIn: Bool
 
     static let builtIn: [PolishMode] = [
-        PolishMode(id: "raw", label: "Raw", emoji: "✏️",
+        PolishMode(id: "fast", label: "Fast", emoji: "⚡",
                    prompt: nil, isBuiltIn: true),
 
         PolishMode(id: "clean", label: "Clean", emoji: "🧹",

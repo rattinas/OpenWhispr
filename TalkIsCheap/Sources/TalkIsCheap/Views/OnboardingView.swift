@@ -283,7 +283,7 @@ struct OnboardingView: View {
 
     private var apiKeysStep: some View {
         VStack(spacing: 16) {
-            stepHeader(icon: "key.fill", title: "Enter your API Keys", subtitle: "These are free to create. Your data goes directly to the API — we never see it.")
+            stepHeader(icon: "key.fill", title: "Enter your API Keys", subtitle: "These are free to create. Your data goes directly to each API — we never see it.")
 
             Spacer()
 
@@ -291,19 +291,25 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Groq API Key (Speech-to-Text)").font(.caption.bold())
                     SecureField("gsk_...", text: $settings.groqApiKey).textFieldStyle(.roundedBorder)
-                    Link("Get free key at console.groq.com →", destination: URL(string: "https://console.groq.com/keys")!).font(.caption)
+                    Link("Get free key at console.groq.com →",
+                         destination: URL(string: "https://console.groq.com/keys")!)
+                        .font(.caption)
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Anthropic API Key (Text Polishing)").font(.caption.bold())
                     SecureField("sk-ant-...", text: $settings.anthropicApiKey).textFieldStyle(.roundedBorder)
-                    Link("Get key at console.anthropic.com →", destination: URL(string: "https://console.anthropic.com/settings/keys")!).font(.caption)
+                    Link("Get key at console.anthropic.com →",
+                         destination: URL(string: "https://console.anthropic.com/settings/keys")!)
+                        .font(.caption)
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Brave Search API Key (Voice Search — optional)").font(.caption.bold())
                     SecureField("BSA...", text: $settings.braveApiKey).textFieldStyle(.roundedBorder)
-                    Link("Get free key at brave.com →", destination: URL(string: "https://brave.com/search/api/")!).font(.caption)
+                    Link("Get free key at brave.com →",
+                         destination: URL(string: "https://brave.com/search/api/")!)
+                        .font(.caption)
                 }
             }
 
@@ -881,7 +887,7 @@ struct OnboardingView: View {
 
     private func modeDescription(_ id: String) -> String {
         switch id {
-        case "raw": return "Exact transcription, no changes"
+        case "fast": return "Direct transcription — no polish, fastest path"
         case "clean": return "Fix punctuation & filler words"
         case "professional": return "Business communication"
         case "marketing": return "Punchy, benefit-driven copy"

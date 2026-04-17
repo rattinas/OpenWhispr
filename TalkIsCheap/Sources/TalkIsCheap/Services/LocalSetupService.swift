@@ -108,25 +108,19 @@ final class LocalSetupService: ObservableObject {
 
     // MARK: - Full Setup
 
-    /// Runs the complete local setup. Call from onboarding when user picks local mode.
-    func setupLocalMode(needsSTT: Bool, needsPolish: Bool) async {
-        state = .installing(step: SetupStep.checkingPython.rawValue)
-        Log.write("LocalSetup: starting (stt=\(needsSTT), polish=\(needsPolish))")
-
+    /// Runs the complete local setup. Since Apple's SFSpeechRecognizer handles
+    /// STT on-device (no download), only Ollama needs to be installed for
+    /// polish. The `needsSTT` flag is accepted for backwards compat but is a
+    /// no-op — SFSpeechRecognizer permission is requested at app start.
+    func setupLocalMode(needsSTT _: Bool, needsPolish: Bool) async {
+        state = .installing(step: SetupStep.checkingOllama.rawValue)
+        Log.write("LocalSetup: starting (Apple for STT, Ollama for polish)")
         do {
-            // STT: Python + mlx-whisper
-            if needsSTT {
-                try await setupWhisper()
-            }
-
-            // Polish: Ollama
             if needsPolish {
                 try await setupOllama()
             }
-
             state = .done
             Log.write("LocalSetup: complete!")
-
         } catch {
             state = .error(error.localizedDescription)
             Log.write("LocalSetup: FAILED — \(error)")
@@ -155,13 +149,13 @@ final class LocalSetupService: ObservableObject {
             }
         }
 
-        // 3. Install packages
+        // 3. Install packages (mlx-whisper pulls torch etc. — can take 5-10 min)
         if !isWhisperInstalled() {
             state = .installing(step: SetupStep.installingWhisper.rawValue)
             Log.write("LocalSetup: Installing mlx-whisper packages...")
             let pip = appSupportDir.appendingPathComponent("venv/bin/pip3").path
-            let result = runProcess(pip, arguments: ["install", "mlx-whisper", "soundfile", "numpy"])
-            Log.write("LocalSetup: pip install result: \(result.suffix(200))")
+            let result = runProcess(pip, arguments: ["install", "mlx-whisper", "soundfile", "numpy"], timeout: 900)
+            Log.write("LocalSetup: pip install result: \(result.suffix(300))")
 
             guard isWhisperInstalled() else {
                 throw SetupError.whisperInstallFailed

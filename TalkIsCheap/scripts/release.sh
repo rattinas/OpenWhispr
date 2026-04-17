@@ -8,10 +8,12 @@ set -euo pipefail
 
 VERSION="${1:-}"
 BUILD="${2:-}"
+MODE="${3:-full}"  # "full" = sign + notarize + deploy; "local" = sign + DMG only
 
 if [ -z "$VERSION" ] || [ -z "$BUILD" ]; then
-  echo "Usage: $0 <version> <build>"
-  echo "Example: $0 1.1.0 2"
+  echo "Usage: $0 <version> <build> [full|local]"
+  echo "Example: $0 1.1.0 2         # full release (notarize + deploy)"
+  echo "Example: $0 1.1.0 2 local   # local test DMG (no notary, no deploy)"
   exit 1
 fi
 
@@ -132,23 +134,39 @@ DMG_STAGE="$BUILD_DIR/dmg-stage"
 rm -rf "$DMG_STAGE"; mkdir -p "$DMG_STAGE"
 cp -R "$APP_DIR" "$DMG_STAGE/"
 
-# Window 540x380, app on left (140,190), Applications drop-link on right (400,190).
-# --no-internet-enable avoids the auto-mount-and-copy behavior on download.
+# Single-action install UX: app icon centered, "Double-click to install" in
+# background image. No Applications drop-link — the app's LetsMove flow
+# handles the copy + relaunch from /Applications after the user double-clicks.
 create-dmg \
   --volname "TalkIsCheap" \
   --background "$BG_IMAGE" \
   --window-pos 200 120 \
-  --window-size 540 380 \
-  --icon-size 96 \
-  --text-size 13 \
-  --icon "TalkIsCheap.app" 140 190 \
-  --app-drop-link 400 190 \
+  --window-size 480 400 \
+  --icon-size 112 \
+  --text-size 12 \
+  --icon "TalkIsCheap.app" 240 150 \
   --hide-extension "TalkIsCheap.app" \
   --no-internet-enable \
   "$DMG_PATH" \
   "$DMG_STAGE"
 
 codesign --force --sign "$SIGNING_IDENTITY" --timestamp "$DMG_PATH"
+
+# Local mode: stop here — skip notarize/staple/deploy so the user can iterate fast
+if [ "$MODE" = "local" ]; then
+  echo ""
+  echo "════════════════════════════════════════════════════"
+  echo "  🧪 Local test build (NOT notarized)"
+  echo "════════════════════════════════════════════════════"
+  echo "  DMG: $DMG_PATH"
+  echo "  Open with: open \"$DMG_PATH\""
+  echo ""
+  echo "  Gatekeeper will warn on first launch — right-click"
+  echo "  the app → Open → Open Anyway. After verifying the"
+  echo "  flow works, run again without 'local' to notarize."
+  echo "════════════════════════════════════════════════════"
+  exit 0
+fi
 
 # 5. Notarize
 echo "▶ [5/8] Notarizing (this may take 1-5 minutes)…"
