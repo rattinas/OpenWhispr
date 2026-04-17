@@ -28,10 +28,14 @@ echo "════════════════════════�
 echo "  Releasing TalkIsCheap $VERSION (build $BUILD)"
 echo "════════════════════════════════════════════════════"
 
-# 1. Build release binary (universal: arm64 + x86_64)
+# 1. Build release binary
+# Universal (arm64+x86_64) requires full Xcode. SwiftPM CLI only builds
+# for the host arch. Apple Silicon covers ~95% of active macOS users;
+# if Intel coverage becomes necessary, install Xcode and add:
+#   swift build -c release --arch arm64 --arch x86_64
 echo ""
-echo "▶ [1/8] Building release binary (universal)…"
-swift build -c release --arch arm64 --arch x86_64
+echo "▶ [1/8] Building release binary (arm64)…"
+swift build -c release
 
 # Locate built binary (universal build lands in .build/apple/Products/Release)
 BINARY_PATH=""
@@ -107,13 +111,36 @@ codesign --force --timestamp --options runtime \
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 spctl --assess --verbose=4 --type execute "$APP_DIR" || true
 
-# 4. Build DMG
-echo "▶ [4/8] Creating DMG…"
+# 4. Build DMG with drag-to-Applications UX
+echo "▶ [4/8] Creating DMG (fancy layout)…"
 DMG_PATH="$BUILD_DIR/TalkIsCheap-$VERSION.dmg"
-hdiutil create -volname "TalkIsCheap" \
-  -srcfolder "$APP_DIR" \
-  -ov -format UDZO \
-  "$DMG_PATH"
+
+# Regenerate background if source missing (idempotent)
+BG_IMAGE="$PROJECT_DIR/Resources/dmg-background.png"
+if [ ! -f "$BG_IMAGE" ]; then
+  swift "$PROJECT_DIR/scripts/generate-dmg-background.swift" "$BG_IMAGE"
+fi
+
+# create-dmg wants a staging folder with only the items to include
+DMG_STAGE="$BUILD_DIR/dmg-stage"
+rm -rf "$DMG_STAGE"; mkdir -p "$DMG_STAGE"
+cp -R "$APP_DIR" "$DMG_STAGE/"
+
+# Window 540x380, app on left (140,190), Applications drop-link on right (400,190).
+# --no-internet-enable avoids the auto-mount-and-copy behavior on download.
+create-dmg \
+  --volname "TalkIsCheap" \
+  --background "$BG_IMAGE" \
+  --window-pos 200 120 \
+  --window-size 540 380 \
+  --icon-size 96 \
+  --text-size 13 \
+  --icon "TalkIsCheap.app" 140 190 \
+  --app-drop-link 400 190 \
+  --hide-extension "TalkIsCheap.app" \
+  --no-internet-enable \
+  "$DMG_PATH" \
+  "$DMG_STAGE"
 
 codesign --force --sign "$SIGNING_IDENTITY" --timestamp "$DMG_PATH"
 

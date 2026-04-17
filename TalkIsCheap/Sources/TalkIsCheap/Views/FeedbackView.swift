@@ -106,7 +106,7 @@ struct FeedbackView: View {
                     Spacer()
                     Text("\(message.count) / 5000")
                         .font(.caption2)
-                        .foregroundStyle(message.count > 4500 ? .orange : .tertiary)
+                        .foregroundStyle(message.count > 4500 ? Color.orange : Color.secondary.opacity(0.6))
                 }
             }
 
