@@ -47,6 +47,14 @@ final class StartupManager: ObservableObject {
     private func performStartup() {
         Log.write("=== STARTUP v2.0 ===")
 
+        // LetsMove: if launched from a DMG, offer to install to /Applications
+        // and relaunch. If the user accepts, we'll quit and a fresh process
+        // will start from the installed location (which then re-runs this flow
+        // minus the DMG branch, and shows onboarding as a normal first launch).
+        if InstallationHelper.moveToApplicationsIfFromDMG() {
+            return
+        }
+
         // Permissions — only log status, don't prompt on every launch
         // (permissions are requested during onboarding, not on startup)
         let accessibility = AXIsProcessTrusted()
