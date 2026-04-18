@@ -5,7 +5,7 @@ enum QuickActionInstaller {
     private static let servicesDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Services")
 
-    private static let workflowVersion = "6"  // bump to force reinstall on update
+    private static let workflowVersion = "7"  // bump to force reinstall on update
 
     /// Install Quick Actions (reinstalls if version changed)
     static func installIfNeeded() {
@@ -204,21 +204,39 @@ enum QuickActionInstaller {
     // shell args. inputMethod=1 in the Automator action is stdin; $@ would
     // be empty and previously silently swallowed the path. For robustness
     // we also honour args when present.
+    //
+    // NB: the script lives inside Automator's document.wflow plist as a
+    // <string> node, so it MUST NOT contain raw ampersands (&& would be
+    // read as a malformed XML entity and macOS would refuse to load the
+    // workflow as "damaged or incomplete"). Use explicit `if` blocks with
+    // semicolons instead of `&&`.
     private static let transcribeScript = #"""
     while IFS= read -r f; do
-      [ -n "$f" ] && echo "$f" > /tmp/.talkischeap_path && /usr/bin/open "talkischeap://transcribe-file"
+      if [ -n "$f" ]; then
+        echo "$f" > /tmp/.talkischeap_path
+        /usr/bin/open "talkischeap://transcribe-file"
+      fi
     done
     for f in "$@"; do
-      [ -n "$f" ] && echo "$f" > /tmp/.talkischeap_path && /usr/bin/open "talkischeap://transcribe-file"
+      if [ -n "$f" ]; then
+        echo "$f" > /tmp/.talkischeap_path
+        /usr/bin/open "talkischeap://transcribe-file"
+      fi
     done
     """#
 
     private static let transcribeSummarizeScript = #"""
     while IFS= read -r f; do
-      [ -n "$f" ] && echo "$f" > /tmp/.talkischeap_path && /usr/bin/open "talkischeap://transcribe-summarize-file"
+      if [ -n "$f" ]; then
+        echo "$f" > /tmp/.talkischeap_path
+        /usr/bin/open "talkischeap://transcribe-summarize-file"
+      fi
     done
     for f in "$@"; do
-      [ -n "$f" ] && echo "$f" > /tmp/.talkischeap_path && /usr/bin/open "talkischeap://transcribe-summarize-file"
+      if [ -n "$f" ]; then
+        echo "$f" > /tmp/.talkischeap_path
+        /usr/bin/open "talkischeap://transcribe-summarize-file"
+      fi
     done
     """#
 }
