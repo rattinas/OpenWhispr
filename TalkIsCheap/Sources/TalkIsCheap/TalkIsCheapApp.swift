@@ -69,6 +69,15 @@ final class StartupManager: ObservableObject {
         let mic = PermissionManager.micPermissionGranted
         Log.write("Accessibility: \(accessibility), Mic: \(mic)")
 
+        // Pre-warm the AVAudioEngine so the first hotkey press doesn't pay
+        // the 70-200 ms cold-start cost (engine build + HAL spin-up +
+        // format negotiation + tap install). Only do this if the user has
+        // already granted mic permission — otherwise the engine will just
+        // fail silently and we'll re-try on first start().
+        if mic {
+            AppState.shared.recorder.prewarm()
+        }
+
         // Hotkey
         let hotkey = HotkeyManager.shared
         hotkey.onKeyDown = {

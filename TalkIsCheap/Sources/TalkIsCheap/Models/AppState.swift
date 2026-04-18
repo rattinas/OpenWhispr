@@ -102,36 +102,57 @@ final class AppState: ObservableObject {
         }
 
         Log.write("startRecording")
-        recordingBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
 
-        // --- FIRST: wire the audio buffer callback and start the engine so
-        // audio starts flowing IMMEDIATELY. Any downstream consumer that
-        // isn't ready yet (Deepgram task, SFSpeech request) buffers the
-        // early frames until it connects. Previously we did AudioDimmer
-        // (100-200 ms AppleScript), SFSpeech setup, token mint planning
-        // and mode resolution BEFORE starting the recorder — burning
-        // 200-400 ms of the user's first word.
-        let modeAtStart = appAwareMode() ?? settings.activePolishMode
-        let modeAtStartPrompt = modeManager.allModes.first { $0.id == modeAtStart }?.prompt
-        let streamingWanted = modeAtStart == "fast" && settings.shouldUseProxy && modeAtStartPrompt == nil
+        // ════════════════════════════════════════════════════════════════
+        // HOT PATH — everything between here and `recorder.start()` eats
+        // the start of the user's first word. Keep it TINY.
+        // ════════════════════════════════════════════════════════════════
 
-        recorder.onNativeBuffer = { buffer in
-            LiveTranscriptionService.shared.feed(buffer: buffer)
-            if streamingWanted {
-                StreamingTranscriber.shared.feed(buffer: buffer)
-            }
-        }
+        // Reset state
         progressiveTask = nil
         progressiveResult = nil
         progressivePolished = nil
+        self.streamingWanted = false  // will be set to true later if applicable
+
+        // Wire the audio callback to read `streamingWanted` from self (not
+        // captured by value) so we can flip it on later once we know.
+        recorder.onNativeBuffer = { [weak self] buffer in
+            LiveTranscriptionService.shared.feed(buffer: buffer)
+            if self?.streamingWanted == true {
+                StreamingTranscriber.shared.feed(buffer: buffer)
+            }
+        }
         recorder.onChunkReady = nil
+
+        // START THE ENGINE — ideally <5 ms (prewarm + persistent tap + gate
+        // flip). First sample lands ~21 ms after this call with our 1024-
+        // frame buffer at 48 kHz.
         recorder.start()
         status = .recording
-        EqualizerOverlay.shared.show()
 
-        // --- THEN start the non-audio consumers. They catch up via the
-        // buffers the recorder has already queued.
+        // ════════════════════════════════════════════════════════════════
+        // COLD PATH — everything below is OK to take time; audio is
+        // already flowing and gets buffered by the recorder until
+        // downstream consumers connect.
+        // ════════════════════════════════════════════════════════════════
+
+        EqualizerOverlay.shared.show()
         SoundFeedback.recordStart()
+
+        // Cache frontmost app ONCE — the IPC call to WindowServer can take
+        // 2-10 ms (spiking to 20-50 ms under load). Previously we called
+        // it twice (once for bundle ID, once inside appAwareMode()).
+        let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        recordingBundleId = frontmost
+
+        let modeAtStart = appAwareMode(frontmost: frontmost) ?? settings.activePolishMode
+        let modeAtStartPrompt = modeManager.allModes.first { $0.id == modeAtStart }?.prompt
+        let needsStreaming = modeAtStart == "fast" && settings.shouldUseProxy && modeAtStartPrompt == nil
+        // Flip the gate so the onNativeBuffer closure starts forwarding to
+        // Deepgram. Any audio captured between recorder.start() and here
+        // (should be <10 ms) was already buffered by StreamingTranscriber's
+        // pendingAudio queue and will be sent when the WS opens.
+        self.streamingWanted = needsStreaming
 
         // AudioDimmer can take up to ~200 ms when it falls back to
         // AppleScript on Bluetooth outputs. Off the hot path.
@@ -157,7 +178,7 @@ final class AppState: ObservableObject {
             localeIdentifier: settings.language == "auto" ? nil : settings.language
         )
 
-        if streamingWanted {
+        if needsStreaming {
             Task { @MainActor in
                 do {
                     let token = try await ProxyClient.mintDeepgramToken()
@@ -172,6 +193,11 @@ final class AppState: ObservableObject {
     private var progressiveTask: Task<Void, Never>?
     private var progressiveResult: String?
     private var progressivePolished: String?
+
+    /// Whether the current recording session is routing audio to Deepgram
+    /// streaming. Read by the recorder's onNativeBuffer closure; set AFTER
+    /// `recorder.start()` so the hot path stays minimal.
+    private var streamingWanted = false
 
     /// Captured at recording-start so the language-learning store updates
     /// the RIGHT app even if the user alt-tabs after releasing the hotkey.
@@ -446,13 +472,21 @@ final class AppState: ObservableObject {
         }
 
         Log.write("startSearchRecording")
-        AudioDimmer.shared.dim()
-        SoundFeedback.recordStart()
+
+        // HOT PATH: start the recorder FIRST so no first-word audio is lost.
         recorder.start()
         status = .recording
+
+        // COLD PATH: UI + audio ducking happens after audio is flowing.
         EqualizerOverlay.shared.show()
+        SoundFeedback.recordStart()
         SearchPanelManager.shared.state = .listening
         SearchPanelManager.shared.show()
+
+        // AudioDimmer can take ~200 ms on Bluetooth outputs — off the hot path.
+        Task.detached(priority: .utility) { @MainActor in
+            AudioDimmer.shared.dim()
+        }
     }
 
     func stopSearchAndProcess() {
@@ -504,7 +538,10 @@ final class AppState: ObservableObject {
     /// Returns a polish mode ID based on the frontmost app, or nil to use the user's selected mode.
     /// Overrides the default modes (clean, fast) only — respects manual mode choices
     /// like "professional", "marketing", or custom scenarios.
-    private func appAwareMode() -> String? {
+    ///
+    /// Accepts an optional pre-fetched `frontmost` bundle ID so we don't
+    /// IPC to WindowServer twice on the hotkey hot path.
+    private func appAwareMode(frontmost: String? = nil) -> String? {
         guard settings.appAwareContext else {
             Log.write("App-aware: disabled in settings")
             return nil
@@ -515,7 +552,7 @@ final class AppState: ObservableObject {
             return nil
         }
 
-        guard let bundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return nil }
+        guard let bundleId = frontmost ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return nil }
 
         let mapping: [String: String] = [
             // Chat & Messaging → Casual

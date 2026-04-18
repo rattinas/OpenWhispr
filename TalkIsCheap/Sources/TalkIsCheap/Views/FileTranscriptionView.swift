@@ -38,9 +38,17 @@ final class FileTranscriptionManager: ObservableObject {
                 // Save .txt
                 FileTranscriptionService.shared.saveTranscript(filePath: path, transcript: transcript)
 
-                // 2. Summarize
+                // 2. Summarize — errors here must NOT eat the transcript.
+                // Show the transcript and surface the summary failure in the
+                // summary tab instead.
                 state = .summarizing
-                let summary = try await FileTranscriptionService.shared.summarize(transcript: transcript)
+                var summary = ""
+                do {
+                    summary = try await FileTranscriptionService.shared.summarize(transcript: transcript)
+                } catch {
+                    Log.write("Summary error: \(error)")
+                    summary = "⚠️ Summary failed: \(error.localizedDescription)"
+                }
 
                 SoundFeedback.done()
                 state = .ready(transcript: transcript, summary: summary, filePath: path)

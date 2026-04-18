@@ -126,6 +126,10 @@ struct OnboardingView: View {
                             pollCount += 1
                             if PermissionManager.micPermissionGranted {
                                 micGranted = true
+                                // Pre-warm the audio engine now that we have
+                                // permission — moves the 70-200 ms spin-up
+                                // cost off the first hotkey press.
+                                AppState.shared.recorder.prewarm()
                                 timer.invalidate()
                             } else if pollCount > 60 {
                                 timer.invalidate()

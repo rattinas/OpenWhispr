@@ -335,21 +335,35 @@ final class FileTranscriptionService {
     // MARK: - Claude summarization (respects provider setting)
 
     func summarize(transcript: String) async throws -> String {
-        let provider = AppSettings.shared.polishProvider
-        if provider == "ollama" {
+        let settings = AppSettings.shared
+        let systemPrompt = "Summarize concisely. Same language. Key points, decisions, action items."
+
+        // Cloud subscribers: route through our proxy so users without a local
+        // Anthropic key still get a proper summary (Claude Sonnet 4.6).
+        if settings.shouldUseProxy {
+            return try await ProxyClient.polish(
+                text: transcript,
+                systemPrompt: systemPrompt,
+                model: "claude-sonnet-4-6"
+            )
+        }
+
+        if settings.polishProvider == "ollama" {
             return try await summarizeOllama(transcript: transcript)
         }
-        return try await summarizeClaude(transcript: transcript)
+        return try await summarizeClaude(transcript: transcript, system: systemPrompt)
     }
 
-    private func summarizeClaude(transcript: String) async throws -> String {
+    private func summarizeClaude(transcript: String, system: String) async throws -> String {
         let apiKey = AppSettings.shared.anthropicApiKey
-        guard !apiKey.isEmpty else { return "" }
+        guard !apiKey.isEmpty else {
+            throw FileTranscriptionError.noApiKey("Set an Anthropic API key in Settings → API Keys, or switch to Cloud mode.")
+        }
 
         let model = AppSettings.shared.searchModel
         let body: [String: Any] = [
             "model": model, "max_tokens": 2048,
-            "system": "Summarize concisely. Same language. Key points, decisions, action items.",
+            "system": system,
             "messages": [["role": "user", "content": transcript]]
         ]
 
@@ -361,11 +375,14 @@ final class FileTranscriptionService {
         req.timeoutInterval = 30
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw FileTranscriptionError.apiError("Claude \(http.statusCode): \((String(data: data, encoding: .utf8) ?? "").prefix(200))")
+        }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = json["content"] as? [[String: Any]],
               let text = content.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String
-        else { return "" }
+        else { throw FileTranscriptionError.apiError("Couldn't parse Claude response") }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
