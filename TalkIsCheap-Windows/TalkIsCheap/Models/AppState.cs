@@ -58,8 +58,12 @@ namespace TalkIsCheap.Models
             {
                 return Status switch
                 {
-                    AppStatus.Ready => $"Ready -- hold {_settings.HotkeyShort} to dictate",
-                    AppStatus.Recording => "Recording...",
+                    AppStatus.Ready => _settings.HandsFreeToggle
+                        ? $"Ready -- tap {_settings.HotkeyShort} to start"
+                        : $"Ready -- hold {_settings.HotkeyShort} to dictate",
+                    AppStatus.Recording => _settings.HandsFreeToggle
+                        ? $"Recording\u2026 press {_settings.HotkeyShort} again to stop"
+                        : "Recording...",
                     AppStatus.Transcribing => "Transcribing...",
                     AppStatus.Polishing => "Polishing...",
                     AppStatus.Done => $"Done: {LastWordCount} words in {LastDuration:F1}s",

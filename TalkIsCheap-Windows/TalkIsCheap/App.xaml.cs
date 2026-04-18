@@ -359,6 +359,16 @@ namespace TalkIsCheap
             appAwareToggle.Unchecked += (s, e) => { _settings.AppAwareContext = false; _settings.Save(); };
             menu.Items.Add(appAwareToggle);
 
+            var handsFreeToggle = new MenuItem
+            {
+                Header = "Hands-free mode (press once to start / again to stop)",
+                IsChecked = _settings.HandsFreeToggle,
+                IsCheckable = true
+            };
+            handsFreeToggle.Checked += (s, e) => { _settings.HandsFreeToggle = true; _settings.Save(); };
+            handsFreeToggle.Unchecked += (s, e) => { _settings.HandsFreeToggle = false; _settings.Save(); };
+            menu.Items.Add(handsFreeToggle);
+
             var autostartToggle = new MenuItem
             {
                 Header = "Start with Windows",

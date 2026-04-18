@@ -99,6 +99,10 @@ namespace TalkIsCheap.Models
         [JsonProperty("cassetteSize")]
         public double CassetteSize { get; set; } = 1.0;
 
+        // Hands-free toggle: press once to start, press again to stop (vs. hold-to-record)
+        [JsonProperty("handsFreeToggle")]
+        public bool HandsFreeToggle { get; set; } = false;
+
         // Constants
         [JsonIgnore]
         public static string CurrentVersion => "2.0.0";

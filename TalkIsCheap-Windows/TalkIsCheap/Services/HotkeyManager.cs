@@ -95,6 +95,10 @@ namespace TalkIsCheap.Services
         private long _lastCtrlReleaseTicks;
         private bool _disposed;
 
+        // Toggle-mode state
+        private bool _isToggledRecording;  // true while recording in hands-free toggle mode
+        private bool _nonModifierDown;     // tracks physical key-down for non-modifier hotkeys
+
         // Timing constants (in ticks, 10000 ticks = 1ms)
         private const long DoubleTapWindowTicks = 5000000;  // 0.5s
         private const long HoldThresholdTicks = 2500000;     // 0.25s
@@ -102,6 +106,7 @@ namespace TalkIsCheap.Services
         private const int VK_LALT = 0xA4;
         private const int VK_RALT = 0xA5;
         private const int VK_CAPSLOCK = 0x14;
+        private const int VK_SNAPSHOT = 0x2C; // PrintScreen — always pass through
 
         private int TargetKeyCode => AppSettings.Shared.HotkeyCode;
         private bool IsModifierHotkey => TargetKeyCode is VK_LCONTROL or VK_RCONTROL or 162 or 163
@@ -183,16 +188,43 @@ namespace TalkIsCheap.Services
                 }
                 else
                 {
-                    // Non-modifier hotkey (F5, F6, F8)
+                    // Screenshot shortcuts (PrintScreen, etc.) always pass through
+                    if (vkCode == VK_SNAPSHOT)
+                        return CallNextHookEx(_hookId, nCode, wParam, lParam);
+
+                    // Non-modifier hotkey (F5, F6, F8, …)
                     if (vkCode == TargetKeyCode)
                     {
-                        if (isKeyDown)
+                        if (isKeyDown && !_nonModifierDown)
                         {
-                            ThreadPool.QueueUserWorkItem(_ => OnKeyDown?.Invoke());
+                            _nonModifierDown = true;
+                            if (AppSettings.Shared.HandsFreeToggle)
+                            {
+                                if (_isToggledRecording)
+                                {
+                                    _isToggledRecording = false;
+                                    Logger.Write("TOGGLE: STOP");
+                                    ThreadPool.QueueUserWorkItem(_ => OnKeyUp?.Invoke());
+                                }
+                                else
+                                {
+                                    _isToggledRecording = true;
+                                    Logger.Write("TOGGLE: START");
+                                    ThreadPool.QueueUserWorkItem(_ => OnKeyDown?.Invoke());
+                                }
+                            }
+                            else
+                            {
+                                ThreadPool.QueueUserWorkItem(_ => OnKeyDown?.Invoke());
+                            }
                         }
                         else if (isKeyUp)
                         {
-                            ThreadPool.QueueUserWorkItem(_ => OnKeyUp?.Invoke());
+                            _nonModifierDown = false;
+                            if (!AppSettings.Shared.HandsFreeToggle)
+                            {
+                                ThreadPool.QueueUserWorkItem(_ => OnKeyUp?.Invoke());
+                            }
                         }
                         return (IntPtr)1; // consume the key
                     }
@@ -207,6 +239,26 @@ namespace TalkIsCheap.Services
         private void HandleCtrlDown(bool shiftDown)
         {
             if (_controlIsDown) return;
+
+            // Toggle mode: press once to start recording, press again to stop
+            if (AppSettings.Shared.HandsFreeToggle)
+            {
+                _controlIsDown = true;
+                _otherKeyPressed = false;
+                if (_isToggledRecording)
+                {
+                    _isToggledRecording = false;
+                    Logger.Write("TOGGLE: STOP");
+                    ThreadPool.QueueUserWorkItem(_ => OnKeyUp?.Invoke());
+                }
+                else
+                {
+                    _isToggledRecording = true;
+                    Logger.Write("TOGGLE: START");
+                    ThreadPool.QueueUserWorkItem(_ => OnKeyDown?.Invoke());
+                }
+                return;
+            }
 
             // Ctrl+Shift = Hands-Free dictation
             if (shiftDown)
@@ -261,6 +313,9 @@ namespace TalkIsCheap.Services
             // Cancel delayed dictation timer
             _delayedDictationTimer?.Dispose();
             _delayedDictationTimer = null;
+
+            // Toggle mode: key release does nothing (stop comes on the next press)
+            if (AppSettings.Shared.HandsFreeToggle) return;
 
             // Released from hands-free
             if (_isHandsFreeMode)
