@@ -143,7 +143,7 @@ struct WaveShape: Shape {
 final class EqualizerPanel: NSPanel {
     // Wider than the cassette so we can show live-preview text above it
     static let panelWidth: CGFloat = 440
-    static let panelHeight: CGFloat = 80
+    static let panelHeight: CGFloat = 120
 
     init() {
         super.init(
@@ -239,6 +239,7 @@ private struct CassetteOverlayContent: View {
             }
 
             CassetteView(isActive: state.status == .recording)
+                .scaleEffect(settings.cassetteScale)
                 .opacity(settings.cassetteOpacity)
                 .shadow(color: .black.opacity(0.3 * settings.cassetteOpacity), radius: 6, y: 3)
         }
