@@ -13,7 +13,20 @@
     <Description>Voice-to-text dictation for Windows</Description>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Explicit x64 targeting: whisper.cpp binaries are x64-only.
+         Without this the app builds as AnyCPU and a framework-dependent publish
+         will fail to launch on machines that don't have .NET 8 Desktop Runtime
+         installed — which is the common "doesn't start" report on AMD machines. -->
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <!-- Self-contained publish profile for distribution.
+       Run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+       This bundles the .NET runtime so users don't need to pre-install it. -->
+  <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishReadyToRun>false</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>

@@ -87,8 +87,11 @@ namespace TalkIsCheap.Services
 
                 ZipFile.ExtractToDirectory(zipPath, extractDir);
 
-                // Find main.exe in extracted files
-                var mainExe = FindFile(extractDir, "main.exe") ?? FindFile(extractDir, "whisper.exe");
+                // Find the whisper CLI binary in extracted files.
+                // whisper.cpp < v1.6.2 ships "main.exe"; v1.6.2+ ships "whisper-cli.exe".
+                var mainExe = FindFile(extractDir, "main.exe")
+                    ?? FindFile(extractDir, "whisper-cli.exe")
+                    ?? FindFile(extractDir, "whisper.exe");
                 if (mainExe != null)
                 {
                     File.Copy(mainExe, BinaryPath, true);
