@@ -109,9 +109,23 @@ final class StreamingTranscriber: NSObject, ObservableObject {
                 self.pendingAudio.append(data)
                 return
             }
-            self.task?.send(.data(data)) { error in
+            self.task?.send(.data(data)) { [weak self] error in
                 if let error {
-                    Log.write("Deepgram send error: \(error.localizedDescription)")
+                    // If the socket has died mid-session, tear down so the
+                    // next start() creates a fresh connection instead of
+                    // looping on "Socket is not connected" errors forever.
+                    let msg = error.localizedDescription
+                    if msg.contains("Socket is not connected") || msg.contains("closed") {
+                        Task { @MainActor in
+                            guard let self else { return }
+                            self.task?.cancel(with: .goingAway, reason: nil)
+                            self.task = nil
+                            self.isStreaming = false
+                            self.isOpen = false
+                        }
+                    } else {
+                        Log.write("Deepgram send error: \(msg)")
+                    }
                 }
             }
         }
@@ -197,7 +211,15 @@ final class StreamingTranscriber: NSObject, ObservableObject {
                 let ns = err as NSError
                 Log.write("Deepgram receive error: \(ns.domain) #\(ns.code) — \(err.localizedDescription)")
                 Task { @MainActor in
+                    // Full tear-down so the next start() can open a fresh
+                    // connection. Previously we only set isStreaming=false
+                    // and left `task` dangling — the guard in start() then
+                    // silently no-op'd for every subsequent dictation.
+                    self.task?.cancel(with: .goingAway, reason: nil)
+                    self.task = nil
                     self.isStreaming = false
+                    self.isOpen = false
+                    self.pendingAudio.removeAll()
                     self.closeContinuation?.resume(returning: self.currentTranscript)
                     self.closeContinuation = nil
                 }
