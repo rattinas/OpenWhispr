@@ -103,29 +103,46 @@ final class AppState: ObservableObject {
 
         Log.write("startRecording")
         recordingBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        AudioDimmer.shared.dim()
+
+        // --- FIRST: wire the audio buffer callback and start the engine so
+        // audio starts flowing IMMEDIATELY. Any downstream consumer that
+        // isn't ready yet (Deepgram task, SFSpeech request) buffers the
+        // early frames until it connects. Previously we did AudioDimmer
+        // (100-200 ms AppleScript), SFSpeech setup, token mint planning
+        // and mode resolution BEFORE starting the recorder — burning
+        // 200-400 ms of the user's first word.
+        let modeAtStart = appAwareMode() ?? settings.activePolishMode
+        let modeAtStartPrompt = modeManager.allModes.first { $0.id == modeAtStart }?.prompt
+        let streamingWanted = modeAtStart == "fast" && settings.shouldUseProxy && modeAtStartPrompt == nil
+
+        recorder.onNativeBuffer = { buffer in
+            LiveTranscriptionService.shared.feed(buffer: buffer)
+            if streamingWanted {
+                StreamingTranscriber.shared.feed(buffer: buffer)
+            }
+        }
+        progressiveTask = nil
+        progressiveResult = nil
+        progressivePolished = nil
+        recorder.onChunkReady = nil
+        recorder.start()
+        status = .recording
+        EqualizerOverlay.shared.show()
+
+        // --- THEN start the non-audio consumers. They catch up via the
+        // buffers the recorder has already queued.
         SoundFeedback.recordStart()
 
-        // Decide transcription engine based on the ACTIVE POLISH MODE:
-        //   - Fast (no polish)  → Deepgram streaming for subscribers, Apple otherwise
-        //   - Any polish mode   → Groq Whisper + Claude polish
-        //
-        // This plays to each engine's strength: Deepgram for speed, Whisper
-        // for accuracy, Claude for polish. Deepgram is only used when the
-        // user doesn't need polish anyway — we don't waste it on modes where
-        // Whisper's better accuracy will win.
-        let modeAtStart = appAwareMode() ?? settings.activePolishMode
-        let modeAtStartIsFast = modeAtStart == "fast"
-        let modeAtStartPrompt = modeManager.allModes.first { $0.id == modeAtStart }?.prompt
-        let streamingWanted = modeAtStartIsFast && settings.shouldUseProxy && modeAtStartPrompt == nil
+        // AudioDimmer can take up to ~200 ms when it falls back to
+        // AppleScript on Bluetooth outputs. Off the hot path.
+        Task.detached(priority: .utility) { @MainActor in
+            AudioDimmer.shared.dim()
+        }
 
         // Language pick, in order of preference:
         //   1. User explicitly set a language in Settings → use that.
-        //   2. User is on "auto" → check the app-aware language store for
-        //      what they typically speak in the frontmost app (learned from
-        //      past dictations via NLLanguageRecognizer). Nails the common
-        //      case: DE user writing English in GitHub, DE in Slack.
-        //   3. No history yet → fall back to Deepgram's multi-language model.
+        //   2. User is on "auto" → check the app-aware language store.
+        //   3. No history yet → Deepgram multi-language model.
         let streamingLanguage: String?
         if settings.language != "auto" {
             streamingLanguage = settings.language
@@ -133,8 +150,12 @@ final class AppState: ObservableObject {
             streamingLanguage = learned
             Log.write("Auto-language: using learned '\(learned)' for frontmost app")
         } else {
-            streamingLanguage = nil // triggers "multi" in StreamingTranscriber
+            streamingLanguage = nil
         }
+
+        LiveTranscriptionService.shared.start(
+            localeIdentifier: settings.language == "auto" ? nil : settings.language
+        )
 
         if streamingWanted {
             Task { @MainActor in
@@ -146,29 +167,6 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        let useStreaming = streamingWanted
-
-        recorder.onNativeBuffer = { buffer in
-            LiveTranscriptionService.shared.feed(buffer: buffer)
-            if useStreaming {
-                StreamingTranscriber.shared.feed(buffer: buffer)
-            }
-        }
-        LiveTranscriptionService.shared.start(
-            localeIdentifier: settings.language == "auto" ? nil : settings.language
-        )
-
-        // Progressive pipeline fully retired — its result was never used in
-        // the mode-aware flow and it was burning one extra transcribe+polish
-        // call per dictation.
-        progressiveTask = nil
-        progressiveResult = nil
-        progressivePolished = nil
-        recorder.onChunkReady = nil
-
-        recorder.start()
-        status = .recording
-        EqualizerOverlay.shared.show()
     }
 
     private var progressiveTask: Task<Void, Never>?
