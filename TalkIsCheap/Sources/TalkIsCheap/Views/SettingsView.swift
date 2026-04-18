@@ -184,6 +184,15 @@ struct SettingsView: View {
             }
 
             Section("Cassette Overlay") {
+                // Live preview — reflects the current opacity + scale so
+                // the user can actually see what they're setting before
+                // it shows up mid-dictation.
+                CassettePreview(
+                    scale: settings.cassetteScale,
+                    opacity: settings.cassetteOpacity
+                )
+                .padding(.vertical, 4)
+
                 HStack {
                     Text("👻")
                     Slider(value: $settings.cassetteOpacity, in: 0.1...1.0, step: 0.1)

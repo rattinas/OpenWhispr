@@ -139,15 +139,26 @@ struct WaveShape: Shape {
     }
 }
 
-/// Floating panel window at bottom center of screen
+/// Floating panel window at bottom center of screen.
+/// The height adapts to the cassette scale so the cassette isn't
+/// cropped when the user sets it larger than 100%.
 final class EqualizerPanel: NSPanel {
-    // Wider than the cassette so we can show live-preview text above it
     static let panelWidth: CGFloat = 440
-    static let panelHeight: CGFloat = 120
 
-    init() {
+    /// Base cassette height (un-scaled) + vertical padding.
+    static let baseCassetteHeight: CGFloat = 32
+    static let chromeHeight: CGFloat = 88  // room for the live-preview bubble
+
+    static func panelHeight(for scale: Double) -> CGFloat {
+        // Cassette drawn bigger than 1x takes more vertical room — reserve
+        // it so SwiftUI doesn't clip the scaled content.
+        let cassetteH = baseCassetteHeight * CGFloat(max(1.0, scale))
+        return chromeHeight + cassetteH + 8
+    }
+
+    init(scale: Double) {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight),
+            contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight(for: scale)),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: true
@@ -163,12 +174,16 @@ final class EqualizerPanel: NSPanel {
         ignoresMouseEvents = true
     }
 
-    func positionAtBottom() {
-        guard let screen = NSScreen.main else { return }
+    func resize(for scale: Double) {
+        let h = Self.panelHeight(for: scale)
+        guard let screen = NSScreen.main else {
+            setContentSize(NSSize(width: Self.panelWidth, height: h))
+            return
+        }
         let screenFrame = screen.visibleFrame
-        let x = screenFrame.midX - frame.width / 2
+        let x = screenFrame.midX - Self.panelWidth / 2
         let y = screenFrame.minY + 20
-        setFrameOrigin(NSPoint(x: x, y: y))
+        setFrame(NSRect(x: x, y: y, width: Self.panelWidth, height: h), display: true)
     }
 }
 
@@ -184,15 +199,18 @@ final class EqualizerOverlay: ObservableObject {
 
     func show() {
         guard isEnabled else { return }
+        let scale = AppSettings.shared.cassetteScale
 
         if panel == nil {
-            let p = EqualizerPanel()
+            let p = EqualizerPanel(scale: scale)
             let hostView = NSHostingView(rootView: CassetteOverlayContent())
             p.contentView = hostView
             self.panel = p
         }
 
-        panel?.positionAtBottom()
+        // Always re-size for the current scale — the user can change it
+        // between dictations and we must not crop the cassette.
+        panel?.resize(for: scale)
         panel?.orderFrontRegardless()
         isVisible = true
     }
@@ -238,14 +256,26 @@ private struct CassetteOverlayContent: View {
                 statusBubble("Polishing…")
             }
 
+            // Reserve the scaled frame size BEFORE scaleEffect so SwiftUI
+            // doesn't draw the bigger cassette inside a 52×32 box and
+            // clip off the edges. Using an explicit scale-aware frame is
+            // the only way to keep scaleEffect from cropping.
             CassetteView(isActive: state.status == .recording)
-                .scaleEffect(settings.cassetteScale)
+                .scaleEffect(settings.cassetteScale, anchor: .bottom)
                 .opacity(settings.cassetteOpacity)
                 .shadow(color: .black.opacity(0.3 * settings.cassetteOpacity), radius: 6, y: 3)
+                .frame(
+                    width: 52 * settings.cassetteScale,
+                    height: 32 * settings.cassetteScale
+                )
         }
         .animation(.easeOut(duration: 0.15), value: live.liveText)
         .animation(.easeOut(duration: 0.15), value: state.status)
-        .frame(width: EqualizerPanel.panelWidth, height: EqualizerPanel.panelHeight, alignment: .bottom)
+        .frame(
+            width: EqualizerPanel.panelWidth,
+            height: EqualizerPanel.panelHeight(for: settings.cassetteScale),
+            alignment: .bottom
+        )
     }
 
     private func statusBubble(_ text: String) -> some View {
@@ -257,5 +287,28 @@ private struct CassetteOverlayContent: View {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(Color.black.opacity(0.55))
             )
+    }
+}
+
+/// Small preview used in SettingsView so the user sees how big the
+/// cassette will actually be at the selected scale.
+struct CassettePreview: View {
+    let scale: Double
+    let opacity: Double
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.black.opacity(0.25))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+                )
+
+            CassetteView(isActive: true)
+                .scaleEffect(CGFloat(scale), anchor: .center)
+                .opacity(opacity)
+        }
+        .frame(height: 110)
     }
 }

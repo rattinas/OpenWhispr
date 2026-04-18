@@ -95,22 +95,29 @@ xattr -cr "$APP_DIR"
 echo "▶ [3/8] Code-signing (inside-out)…"
 SPARKLE_FW="$APP_DIR/Contents/Frameworks/Sparkle.framework"
 
-sign() {
+# Per sparkle-project.org/documentation/codesign/ we MUST preserve the
+# embedded entitlements and hardened-runtime flags that ship with the
+# Sparkle XCFramework. Without --preserve-metadata, re-signing strips
+# the entitlements blob from Updater.app/Autoupdate/XPC services — which
+# breaks the "An error occurred while running the updater" path because
+# the child processes can't acquire the Mach services they need.
+sign_preserve() {
   codesign --force --timestamp --options runtime \
+    --preserve-metadata=entitlements,flags \
     --sign "$SIGNING_IDENTITY" "$@"
 }
 
-# XPC services (no entitlements — Sparkle's own sandbox profiles apply)
-sign "$SPARKLE_FW/Versions/B/XPCServices/Downloader.xpc"
-sign "$SPARKLE_FW/Versions/B/XPCServices/Installer.xpc"
+# XPC services
+sign_preserve "$SPARKLE_FW/Versions/B/XPCServices/Downloader.xpc"
+sign_preserve "$SPARKLE_FW/Versions/B/XPCServices/Installer.xpc"
 
 # Sparkle auxiliary binaries & Updater.app
-sign "$SPARKLE_FW/Versions/B/Autoupdate"
-sign "$SPARKLE_FW/Versions/B/Updater.app"
+sign_preserve "$SPARKLE_FW/Versions/B/Autoupdate"
+sign_preserve "$SPARKLE_FW/Versions/B/Updater.app"
 
 # Sparkle main binary + framework shell
-sign "$SPARKLE_FW/Versions/B/Sparkle"
-sign "$SPARKLE_FW"
+sign_preserve "$SPARKLE_FW/Versions/B/Sparkle"
+sign_preserve "$SPARKLE_FW"
 
 # Main app (with entitlements)
 codesign --force --timestamp --options runtime \
