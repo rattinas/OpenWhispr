@@ -43,16 +43,31 @@ final class FileTranscriptionService {
         let compressedData = try Data(contentsOf: compressedPath)
         Log.write("Compressed: \(compressedData.count / 1024)KB")
 
-        // Step 2: Transcribe based on provider setting
-        let provider = AppSettings.shared.sttProvider
+        // Step 2: Transcribe based on service mode (same routing as dictation)
+        let settings = AppSettings.shared
+        let provider = settings.sttProvider
         let transcript: String
 
-        if provider == "local" {
+        if settings.shouldUseProxy {
+            // Cloud subscribers: route through our proxy. For large files we
+            // still chunk locally but upload each chunk through the proxy so
+            // the user isn't blocked by a missing Groq key.
+            if compressedData.count <= maxChunkSize {
+                transcript = try await ProxyClient.transcribe(
+                    wavData: compressedData,
+                    language: settings.language == "auto" ? nil : settings.language,
+                    dictionary: settings.customDictionary.isEmpty ? nil : settings.customDictionary
+                )
+            } else {
+                transcript = try await transcribeProxyChunked(inputPath: compressedPath.path)
+            }
+        } else if provider == "local" {
             transcript = try await transcribeLocal(audioPath: compressedPath.path)
         } else {
-            let apiKey = AppSettings.shared.groqApiKey
-            guard !apiKey.isEmpty else { throw FileTranscriptionError.noApiKey("Set Groq API key in Settings") }
-
+            let apiKey = settings.groqApiKey
+            guard !apiKey.isEmpty else {
+                throw FileTranscriptionError.noApiKey("Set a Groq API key in Settings → API Keys, or switch to the Cloud service mode.")
+            }
             if compressedData.count <= maxChunkSize {
                 transcript = try await transcribeGroq(data: compressedData, fileName: "audio.mp3", apiKey: apiKey)
             } else {
@@ -62,6 +77,24 @@ final class FileTranscriptionService {
 
         cleanup()
         return transcript
+    }
+
+    private func transcribeProxyChunked(inputPath: String) async throws -> String {
+        let chunks = try splitAudio(inputPath: inputPath)
+        Log.write("Split into \(chunks.count) chunks (proxy)")
+        var parts: [String] = []
+        let settings = AppSettings.shared
+        for (i, chunkPath) in chunks.enumerated() {
+            Log.write("Chunk \(i + 1)/\(chunks.count) via proxy…")
+            let data = try Data(contentsOf: URL(fileURLWithPath: chunkPath))
+            let text = try await ProxyClient.transcribe(
+                wavData: data,
+                language: settings.language == "auto" ? nil : settings.language,
+                dictionary: settings.customDictionary.isEmpty ? nil : settings.customDictionary
+            )
+            parts.append(text)
+        }
+        return parts.joined(separator: " ")
     }
 
     // MARK: - Document text extraction
@@ -363,21 +396,37 @@ final class FileTranscriptionService {
     // MARK: - Ask question (respects provider)
 
     func askQuestion(transcript: String, question: String) async throws -> String {
-        let provider = AppSettings.shared.polishProvider
-        if provider == "ollama" {
+        let settings = AppSettings.shared
+        let systemPrompt = "You are answering questions about a document / transcribed audio. Base every answer on the provided transcript below. Be precise, quote relevant passages when useful, admit when the transcript doesn't cover the question. Match the user's language."
+        let userContent = "Transcript:\n\(transcript)\n\nQuestion: \(question)"
+
+        // Cloud subscribers: go through our proxy (Claude Sonnet 4.6 for
+        // quality answers). Users without a local Anthropic key get real
+        // results instead of "No API key" error.
+        if settings.shouldUseProxy {
+            return try await ProxyClient.polish(
+                text: userContent,
+                systemPrompt: systemPrompt,
+                model: "claude-sonnet-4-6"
+            )
+        }
+
+        if settings.polishProvider == "ollama" {
             return try await askOllama(transcript: transcript, question: question)
         }
-        return try await askClaude(transcript: transcript, question: question)
+        return try await askClaude(transcript: transcript, question: question, system: systemPrompt)
     }
 
-    private func askClaude(transcript: String, question: String) async throws -> String {
+    private func askClaude(transcript: String, question: String, system: String) async throws -> String {
         let apiKey = AppSettings.shared.anthropicApiKey
-        guard !apiKey.isEmpty else { return "No API key" }
+        guard !apiKey.isEmpty else {
+            throw FileTranscriptionError.noApiKey("Set an Anthropic API key in Settings → API Keys, or switch to Cloud mode.")
+        }
 
         let model = AppSettings.shared.searchModel
         let body: [String: Any] = [
             "model": model, "max_tokens": 2048,
-            "system": "Answer based on transcript. Precise. Same language as question.",
+            "system": system,
             "messages": [["role": "user", "content": "Transcript:\n\(transcript)\n\nQuestion: \(question)"]]
         ]
 
@@ -389,11 +438,14 @@ final class FileTranscriptionService {
         req.timeoutInterval = 30
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, _) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw FileTranscriptionError.apiError("Claude \(http.statusCode): \((String(data: data, encoding: .utf8) ?? "").prefix(200))")
+        }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = json["content"] as? [[String: Any]],
               let text = content.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String
-        else { return "Parse error" }
+        else { throw FileTranscriptionError.apiError("Couldn't parse Claude response") }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

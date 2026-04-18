@@ -59,10 +59,18 @@ final class FileTranscriptionManager: ObservableObject {
         chatMessages.append((role: "user", text: question))
 
         Task {
-            let answer = try await FileTranscriptionService.shared.askQuestion(
-                transcript: currentTranscript, question: question
-            )
-            chatMessages.append((role: "assistant", text: answer))
+            do {
+                let answer = try await FileTranscriptionService.shared.askQuestion(
+                    transcript: currentTranscript, question: question
+                )
+                await MainActor.run {
+                    chatMessages.append((role: "assistant", text: answer))
+                }
+            } catch {
+                await MainActor.run {
+                    chatMessages.append((role: "assistant", text: "⚠️ \(error.localizedDescription)"))
+                }
+            }
         }
     }
 
