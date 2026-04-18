@@ -191,6 +191,13 @@ struct SettingsView: View {
                 }
                 Text("Opacity: \(Int(settings.cassetteOpacity * 100))%")
                     .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("S").font(.caption)
+                    Slider(value: $settings.cassetteScale, in: 0.5...2.5, step: 0.1)
+                    Text("L").font(.caption.bold())
+                }
+                Text("Size: \(Int(settings.cassetteScale * 100))%")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Hotkey") {

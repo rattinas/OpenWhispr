@@ -30,6 +30,7 @@ final class AppSettings: ObservableObject {
 
     // Cassette overlay
     @AppStorage("cassetteOpacity") var cassetteOpacity: Double = 0.7
+    @AppStorage("cassetteScale") var cassetteScale: Double = 1.0
 
     // Audio dimming
     @AppStorage("dimAudioWhileRecording") var dimAudioWhileRecording: Bool = true

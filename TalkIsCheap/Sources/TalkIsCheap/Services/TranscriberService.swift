@@ -5,6 +5,13 @@ final class TranscriberService {
     static let shared = TranscriberService()
 
     func transcribe(wavData: Data, language: String?, polishMode: String = "clean") async throws -> String {
+        // WAV header is 44 bytes; audio is Float32 mono at 16000 Hz (4 bytes/sample).
+        // Reject recordings shorter than 0.5 s before touching any API.
+        let audioDuration = Double(max(0, wavData.count - 44)) / (16000.0 * 4.0)
+        if audioDuration < 0.5 {
+            throw TranscriberError.tooShort
+        }
+
         let settings = AppSettings.shared
         let dict = settings.customDictionary.isEmpty ? nil : settings.customDictionary
 
@@ -84,6 +91,12 @@ final class TranscriberService {
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            // Extract the human-readable message from Groq's JSON error envelope.
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let errorObj = json["error"] as? [String: Any],
+               let message = errorObj["message"] as? String {
+                throw TranscriberError.apiError(message)
+            }
             let errorText = String(data: data, encoding: .utf8) ?? "Unknown error"
             throw TranscriberError.apiError(errorText)
         }
@@ -143,6 +156,7 @@ enum TranscriberError: LocalizedError {
     case apiError(String)
     case localNotSetup
     case localError(String)
+    case tooShort
 
     var errorDescription: String? {
         switch self {
@@ -150,6 +164,7 @@ enum TranscriberError: LocalizedError {
         case .apiError(let msg): return "Groq API error: \(msg)"
         case .localNotSetup: return "Local mode not set up. Run setup from Settings."
         case .localError(let msg): return "Local transcription error: \(msg)"
+        case .tooShort: return "Recording too short. Please hold the button a bit longer."
         }
     }
 }
