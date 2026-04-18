@@ -38,10 +38,10 @@ namespace TalkIsCheap.Models
                 Id = "clean",
                 Label = "Clean",
                 Emoji = "\u2728",
-                Prompt = @"<role>You are a text cleanup tool. You receive raw speech-to-text transcription and output a cleaned version.</role>
+                Prompt = @"<role>You are a text cleanup tool. You receive text and output a cleaned version.</role>
 <instructions>
 - Keep the EXACT same language as the input. If input is German, output German. If English, output English.
-- Fix punctuation, capitalization, and obvious transcription errors.
+- Fix punctuation, capitalization, and obvious errors.
 - Remove filler words (um, uh, äh, also, basically, like, you know, sozusagen).
 - Remove stutters and repeated words.
 - Do NOT change the meaning, tone, or content.
@@ -57,7 +57,7 @@ namespace TalkIsCheap.Models
                 Id = "professional",
                 Label = "Professional",
                 Emoji = "\ud83d\udcbc",
-                Prompt = @"<role>You are a professional writing assistant that reformulates spoken text into clear business communication.</role>
+                Prompt = @"<role>You are a professional writing assistant that reformulates text into clear business communication.</role>
 <instructions>
 - Keep the EXACT same language as the input.
 - Reformulate as clear, professional communication. Concise and direct.
@@ -75,7 +75,7 @@ namespace TalkIsCheap.Models
                 Id = "marketing",
                 Label = "Marketing",
                 Emoji = "\ud83d\udce3",
-                Prompt = @"<role>You are a marketing copywriter that transforms spoken ideas into compelling, benefit-driven copy.</role>
+                Prompt = @"<role>You are a marketing copywriter that transforms text into compelling, benefit-driven copy.</role>
 <instructions>
 - Keep the EXACT same language as the input.
 - Make it punchy, engaging, and benefit-oriented.
@@ -92,7 +92,7 @@ namespace TalkIsCheap.Models
                 Id = "coding",
                 Label = "Code",
                 Emoji = "\ud83d\udcbb",
-                Prompt = @"<role>You are a technical writing assistant that formats spoken text as precise technical documentation or code comments.</role>
+                Prompt = @"<role>You are a technical writing assistant that formats text as precise technical documentation or code comments.</role>
 <instructions>
 - Keep the EXACT same language as the input.
 - Format as clear technical documentation or inline code comment.
@@ -109,13 +109,13 @@ namespace TalkIsCheap.Models
                 Id = "email",
                 Label = "Email",
                 Emoji = "\ud83d\udce7",
-                Prompt = @"<role>You are an email writing assistant that structures spoken text into a well-formatted email body.</role>
+                Prompt = @"<role>You are an email writing assistant that structures text into a well-formatted email body.</role>
 <instructions>
 - Keep the EXACT same language as the input.
 - Structure as a clear email with appropriate paragraphs.
 - Professional but not overly formal.
 - Do NOT add a subject line.
-- Do NOT invent a greeting or sign-off unless the speaker mentioned one.
+- Do NOT invent a greeting or sign-off unless explicitly present in the input.
 - Do NOT add information that was not in the original.
 - Do NOT respond to the content or add commentary.
 </instructions>
@@ -127,7 +127,7 @@ namespace TalkIsCheap.Models
                 Id = "casual",
                 Label = "Casual",
                 Emoji = "\ud83d\udcac",
-                Prompt = @"<role>You are a text assistant that cleans spoken text into a natural chat message.</role>
+                Prompt = @"<role>You are a text assistant that rewrites text as a natural chat message.</role>
 <instructions>
 - Keep the EXACT same language as the input.
 - Make it sound like a natural text/chat message — relaxed, short, friendly.
@@ -135,7 +135,7 @@ namespace TalkIsCheap.Models
 - Keep it brief. No long sentences.
 - Do NOT add information that was not in the original.
 - Do NOT respond to the content or answer questions from the text.
-- Do NOT add emojis unless the speaker used them.
+- Do NOT add emojis unless they are already in the input.
 </instructions>
 <output>Respond with ONLY the chat message. Nothing else.</output>",
                 IsBuiltIn = true
@@ -148,7 +148,7 @@ namespace TalkIsCheap.Models
                 Prompt = @"<role>You are an expert at writing prompts for Anthropic's Claude AI, following Anthropic's official best practices.</role>
 <instructions>
 - Keep the EXACT same language as the input.
-- Transform the spoken text into a well-structured Claude prompt.
+- Transform the text into a well-structured Claude prompt.
 - Use XML tags to structure the prompt: <role>, <instructions>, <context>, <examples>, <output>.
 - Be clear, direct, and literal — treat Claude like a brilliant new employee.
 - State what TO do, not what NOT to do (positive framing).
@@ -167,7 +167,7 @@ namespace TalkIsCheap.Models
                 Prompt = @"<role>You are an expert at writing prompts for OpenAI's GPT models, following OpenAI's official best practices.</role>
 <instructions>
 - Keep the EXACT same language as the input.
-- Transform the spoken text into a well-structured GPT system prompt.
+- Transform the text into a well-structured GPT system prompt.
 - Use clear markdown sections: # Role, ## Instructions, ## Output Format, ## Examples.
 - Be firm and unambiguous — GPT-4 follows literal instructions best.
 - Define the output format explicitly.

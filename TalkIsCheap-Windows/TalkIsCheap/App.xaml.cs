@@ -19,6 +19,7 @@ namespace TalkIsCheap
     {
         private TaskbarIcon? _notifyIcon;
         private SettingsWindow? _settingsWindow;
+        private RecordingOverlayWindow? _overlay;
         private readonly AppState _state = AppState.Shared;
         private readonly AppSettings _settings = AppSettings.Shared;
         private DispatcherTimer? _statusTimer;
@@ -108,6 +109,7 @@ namespace TalkIsCheap
                 {
                     UpdateTrayIcon();
                     UpdateContextMenu();
+                    UpdateOverlay();
                 });
             };
 
@@ -138,6 +140,7 @@ namespace TalkIsCheap
         {
             HotkeyManager.Shared.Dispose();
             _notifyIcon?.Dispose();
+            _overlay?.Close();
             base.OnExit(e);
         }
 
@@ -184,6 +187,29 @@ namespace TalkIsCheap
             };
 
             hotkey.Start();
+        }
+
+        // MARK: - Recording Overlay
+
+        private void UpdateOverlay()
+        {
+            if (_state.Status == AppStatus.Recording)
+            {
+                if (_overlay == null || !_overlay.IsLoaded)
+                {
+                    _overlay = new RecordingOverlayWindow();
+                }
+                _overlay.Show();
+                _overlay.StartAnimation();
+            }
+            else
+            {
+                if (_overlay != null && _overlay.IsLoaded)
+                {
+                    _overlay.StopAnimation();
+                    _overlay.Hide();
+                }
+            }
         }
 
         // MARK: - Tray Icon

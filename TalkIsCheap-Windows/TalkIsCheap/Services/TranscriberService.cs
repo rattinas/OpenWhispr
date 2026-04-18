@@ -29,11 +29,17 @@ namespace TalkIsCheap.Services
 
         private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(60) };
 
+        // 16 kHz 16-bit mono = 32000 bytes/s; 0.5 s = 16000 PCM bytes + 44-byte WAV header
+        private const int MinAudioBytes = 44 + 16000;
+
         /// <summary>
         /// Transcribe WAV audio data using configured provider (Groq Cloud or Local Whisper).
         /// </summary>
         public async Task<string> Transcribe(byte[] wavData, string? language)
         {
+            if (wavData.Length < MinAudioBytes)
+                throw new InvalidOperationException("Recording too short — hold the key for at least half a second.");
+
             if (AppSettings.Shared.SttProvider == "local")
             {
                 return await WhisperLocalService.Shared.Transcribe(wavData, language);

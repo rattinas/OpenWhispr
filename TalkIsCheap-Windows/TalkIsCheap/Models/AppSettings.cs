@@ -95,6 +95,10 @@ namespace TalkIsCheap.Models
         [JsonProperty("searchModel")]
         public string SearchModel { get; set; } = "claude-sonnet-4-6";
 
+        // Cassette overlay size (1.0 = default, range 0.5 – 2.0)
+        [JsonProperty("cassetteSize")]
+        public double CassetteSize { get; set; } = 1.0;
+
         // Constants
         [JsonIgnore]
         public static string CurrentVersion => "2.0.0";

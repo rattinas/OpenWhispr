@@ -1,0 +1,148 @@
+<Window x:Class="TalkIsCheap.Views.RecordingOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        SizeToContent="WidthAndHeight"
+        IsHitTestVisible="True">
+
+    <Window.Resources>
+        <Style x:Key="SizeBtn" TargetType="Button">
+            <Setter Property="Width" Value="22"/>
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="#44FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#33FFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <!-- Outer container: transparent background, click-through except the cassette area -->
+    <Grid>
+        <!-- Cassette card with controls -->
+        <Border x:Name="CassetteCard"
+                CornerRadius="12"
+                Padding="12,8"
+                MouseLeftButtonDown="CassetteCard_MouseDown">
+            <Border.Background>
+                <SolidColorBrush Color="#CC1A1A2E"/>
+            </Border.Background>
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="16" ShadowDepth="4" Opacity="0.5" Color="Black"/>
+            </Border.Effect>
+
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <!-- Cassette canvas -->
+                <Canvas x:Name="CassetteCanvas" Width="104" Height="64" Margin="0,0,8,0">
+
+                    <!-- Cassette body -->
+                    <Rectangle Canvas.Left="0" Canvas.Top="8" Width="104" Height="48"
+                               RadiusX="4" RadiusY="4">
+                        <Rectangle.Fill>
+                            <SolidColorBrush Color="#26FFFFFF"/>
+                        </Rectangle.Fill>
+                        <Rectangle.Stroke>
+                            <SolidColorBrush Color="#4DFFFFFF"/>
+                        </Rectangle.Stroke>
+                    </Rectangle>
+
+                    <!-- Label band -->
+                    <Rectangle Canvas.Left="12" Canvas.Top="10" Width="80" Height="16" RadiusX="2" RadiusY="2">
+                        <Rectangle.Fill>
+                            <SolidColorBrush Color="#33FFFFFF"/>
+                        </Rectangle.Fill>
+                    </Rectangle>
+
+                    <!-- REC text -->
+                    <TextBlock Canvas.Left="44" Canvas.Top="11" Text="REC"
+                               FontSize="8" FontWeight="Black" Foreground="#E6522C"
+                               x:Name="RecLabel"/>
+
+                    <!-- Tape window -->
+                    <Rectangle Canvas.Left="27" Canvas.Top="32" Width="50" Height="14" RadiusX="2" RadiusY="2">
+                        <Rectangle.Fill>
+                            <SolidColorBrush Color="#4D000000"/>
+                        </Rectangle.Fill>
+                    </Rectangle>
+
+                    <!-- Left spool outer -->
+                    <Ellipse Canvas.Left="31" Canvas.Top="34" Width="14" Height="14" x:Name="SpoolLeftOuter">
+                        <Ellipse.Fill>
+                            <SolidColorBrush Color="#40FFFFFF"/>
+                        </Ellipse.Fill>
+                        <Ellipse.Stroke>
+                            <SolidColorBrush Color="#66FFFFFF"/>
+                        </Ellipse.Stroke>
+                    </Ellipse>
+                    <!-- Left spool inner -->
+                    <Ellipse Canvas.Left="36" Canvas.Top="39" Width="4" Height="4" x:Name="SpoolLeftInner">
+                        <Ellipse.Fill>
+                            <SolidColorBrush Color="#1AFFFFFF"/>
+                        </Ellipse.Fill>
+                    </Ellipse>
+                    <!-- Left spool spoke container (rotated via RenderTransform on code-behind) -->
+                    <Canvas Canvas.Left="38" Canvas.Top="41" Width="0" Height="0" x:Name="SpoolLeftSpokes"/>
+
+                    <!-- Right spool outer -->
+                    <Ellipse Canvas.Left="59" Canvas.Top="34" Width="14" Height="14" x:Name="SpoolRightOuter">
+                        <Ellipse.Fill>
+                            <SolidColorBrush Color="#40FFFFFF"/>
+                        </Ellipse.Fill>
+                        <Ellipse.Stroke>
+                            <SolidColorBrush Color="#66FFFFFF"/>
+                        </Ellipse.Stroke>
+                    </Ellipse>
+                    <!-- Right spool inner -->
+                    <Ellipse Canvas.Left="64" Canvas.Top="39" Width="4" Height="4" x:Name="SpoolRightInner">
+                        <Ellipse.Fill>
+                            <SolidColorBrush Color="#1AFFFFFF"/>
+                        </Ellipse.Fill>
+                    </Ellipse>
+                    <!-- Right spool spokes -->
+                    <Canvas Canvas.Left="66" Canvas.Top="41" Width="0" Height="0" x:Name="SpoolRightSpokes"/>
+
+                    <!-- Recording dot -->
+                    <Ellipse Canvas.Left="90" Canvas.Top="9" Width="6" Height="6"
+                             x:Name="RecDot">
+                        <Ellipse.Fill>
+                            <SolidColorBrush Color="#E6522C"/>
+                        </Ellipse.Fill>
+                    </Ellipse>
+
+                </Canvas>
+
+                <!-- Size controls -->
+                <StackPanel Orientation="Vertical" VerticalAlignment="Center" Margin="0,0,0,0">
+                    <Button x:Name="BtnIncrease" Content="+" Style="{StaticResource SizeBtn}"
+                            Click="BtnIncrease_Click" Margin="0,0,0,4" ToolTip="Larger"/>
+                    <Button x:Name="BtnDecrease" Content="−" Style="{StaticResource SizeBtn}"
+                            Click="BtnDecrease_Click" ToolTip="Smaller"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>
