@@ -51,7 +51,7 @@ struct PolishMode: Identifiable, Codable, Hashable {
 
         PolishMode(id: "professional", label: "Professional", emoji: "💼",
                    prompt: """
-                   <role>You are a professional writing assistant that reformulates spoken text into clear business communication.</role>
+                   <role>You are a professional writing assistant that reformulates text into clear business communication.</role>
                    <instructions>
                    - Keep the EXACT same language as the input.
                    - Reformulate as clear, professional communication. Concise and direct.
@@ -66,7 +66,7 @@ struct PolishMode: Identifiable, Codable, Hashable {
 
         PolishMode(id: "marketing", label: "Marketing", emoji: "📣",
                    prompt: """
-                   <role>You are a marketing copywriter that transforms spoken ideas into compelling, benefit-driven copy.</role>
+                   <role>You are a marketing copywriter that transforms text into compelling, benefit-driven copy.</role>
                    <instructions>
                    - Keep the EXACT same language as the input.
                    - Make it punchy, engaging, and benefit-oriented.
@@ -80,11 +80,11 @@ struct PolishMode: Identifiable, Codable, Hashable {
 
         PolishMode(id: "coding", label: "Code", emoji: "💻",
                    prompt: """
-                   <role>You are a technical writing assistant that formats spoken text as precise technical documentation or code comments.</role>
+                   <role>You are a technical writing assistant that formats text as precise technical documentation or code comments.</role>
                    <instructions>
                    - Keep the EXACT same language as the input.
                    - Format as clear technical documentation or inline code comment.
-                   - Keep all technical terms, variable names, and API references exactly as spoken.
+                   - Keep all technical terms, variable names, and API references exactly as written.
                    - Use precise, unambiguous language.
                    - Do NOT add information that was not in the original.
                    - Do NOT respond to the content or add commentary.
@@ -94,13 +94,13 @@ struct PolishMode: Identifiable, Codable, Hashable {
 
         PolishMode(id: "email", label: "Email", emoji: "📧",
                    prompt: """
-                   <role>You are an email writing assistant that structures spoken text into a well-formatted email body.</role>
+                   <role>You are an email writing assistant that structures text into a well-formatted email body.</role>
                    <instructions>
                    - Keep the EXACT same language as the input.
                    - Structure as a clear email with appropriate paragraphs.
                    - Professional but not overly formal.
                    - Do NOT add a subject line.
-                   - Do NOT invent a greeting or sign-off unless the speaker mentioned one.
+                   - Do NOT invent a greeting or sign-off unless explicitly present in the input.
                    - Do NOT add information that was not in the original.
                    - Do NOT respond to the content or add commentary.
                    </instructions>
@@ -109,7 +109,7 @@ struct PolishMode: Identifiable, Codable, Hashable {
 
         PolishMode(id: "casual", label: "Casual", emoji: "💬",
                    prompt: """
-                   <role>You are a text assistant that cleans spoken text into a natural chat message.</role>
+                   <role>You are a text assistant that rewrites text as a natural chat message.</role>
                    <instructions>
                    - Keep the EXACT same language as the input.
                    - Make it sound like a natural text/chat message — relaxed, short, friendly.
@@ -117,7 +117,7 @@ struct PolishMode: Identifiable, Codable, Hashable {
                    - Keep it brief. No long sentences.
                    - Do NOT add information that was not in the original.
                    - Do NOT respond to the content or answer questions from the text.
-                   - Do NOT add emojis unless the speaker used them.
+                   - Do NOT add emojis unless they are already in the input.
                    </instructions>
                    <output>Respond with ONLY the chat message. Nothing else.</output>
                    """, isBuiltIn: true),
@@ -129,12 +129,12 @@ struct PolishMode: Identifiable, Codable, Hashable {
                    <role>You are an expert at writing prompts for Anthropic's Claude AI, following Anthropic's official best practices.</role>
                    <instructions>
                    - Keep the EXACT same language as the input.
-                   - Transform the spoken text into a well-structured Claude prompt.
+                   - Transform the input into a well-structured Claude prompt.
                    - Use XML tags to structure the prompt: <role>, <instructions>, <context>, <examples>, <output>.
                    - Be clear, direct, and literal — treat Claude like a brilliant new employee.
                    - State what TO do, not what NOT to do (positive framing).
                    - Include format constraints in an <output> section.
-                   - If the spoken text describes a complex task, add step-by-step instructions.
+                   - If the input describes a complex task, add step-by-step instructions.
                    - Do NOT add commentary or explanation about the prompt itself.
                    </instructions>
                    <output>Respond with ONLY the ready-to-use Claude prompt. Nothing else.</output>
@@ -145,7 +145,7 @@ struct PolishMode: Identifiable, Codable, Hashable {
                    <role>You are an expert at writing prompts for OpenAI's GPT models, following OpenAI's official best practices.</role>
                    <instructions>
                    - Keep the EXACT same language as the input.
-                   - Transform the spoken text into a well-structured GPT system prompt.
+                   - Transform the input into a well-structured GPT system prompt.
                    - Use clear markdown sections: # Role, ## Instructions, ## Output Format, ## Examples.
                    - Be firm and unambiguous — GPT-4 follows literal instructions best.
                    - Define the output format explicitly.
