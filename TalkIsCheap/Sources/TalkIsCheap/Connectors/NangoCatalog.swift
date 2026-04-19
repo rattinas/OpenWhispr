@@ -10,23 +10,43 @@ final class NangoCatalog: ObservableObject {
     private init() {}
 
     @Published private(set) var entries: [NangoClient.CatalogEntry] = []
+    @Published private(set) var providers: [NangoClient.ProviderInfo] = []
     @Published private(set) var isLoading = false
     @Published private(set) var loadError: String?
 
-    /// Fetches the catalog from our backend. Safe to call repeatedly.
+    /// Fetches both the project catalog (configured integrations) and the
+    /// full Nango provider list so the UI can render a "Browse more
+    /// services" section with all 761 available providers.
     func refresh() async {
         isLoading = true
         loadError = nil
-        do {
-            let list = try await NangoClient.shared.catalog()
+        async let entriesFuture = Task { try? await NangoClient.shared.catalog() }.value
+        async let providersFuture = Task { try? await NangoClient.shared.providers() }.value
+        let (newEntries, newProviders) = await (entriesFuture, providersFuture)
+
+        if let list = newEntries {
             self.entries = list.sorted { lhs, rhs in
                 if lhs.connected != rhs.connected { return lhs.connected && !rhs.connected }
                 return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
             }
-        } catch {
-            self.loadError = error.localizedDescription
+        }
+        if let list = newProviders {
+            self.providers = list.sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+        }
+
+        if newEntries == nil && newProviders == nil {
+            self.loadError = "Couldn't reach TalkIsCheap Server."
         }
         isLoading = false
+    }
+
+    /// Providers that don't yet have an integration configured in the
+    /// user's Nango project — candidates for the "Add more" browser.
+    func unconfiguredProviders() -> [NangoClient.ProviderInfo] {
+        let configuredProviders = Set(entries.map { $0.provider.lowercased() })
+        return providers.filter { !configuredProviders.contains($0.name.lowercased()) }
     }
 
     /// Group entries by category for sectioned rendering.

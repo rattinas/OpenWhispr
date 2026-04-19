@@ -96,6 +96,29 @@ struct ConnectedServicesView: View {
                         }
                     }
                 }
+
+                // Browse all 761 Nango providers. Each row opens Nango's
+                // dashboard at the right integration-create page.
+                let browseList = filteredProviders()
+                if !browseList.isEmpty {
+                    Section {
+                        ForEach(browseList.prefix(40), id: \.name) { p in
+                            browseRow(p)
+                        }
+                        if browseList.count > 40 {
+                            Text("\(browseList.count - 40) more matching — type in the search box to narrow down.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "square.grid.3x3.fill")
+                            Text("Add more services")
+                        }
+                    } footer: {
+                        Text("Pick a service → we open Nango's dashboard with the provider pre-selected. Complete the 30-second setup (Nango uses shared OAuth for most), then come back and refresh.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .formStyle(.grouped)
@@ -160,6 +183,87 @@ struct ConnectedServicesView: View {
             return (pos, entry)
         }
         return matched.sorted { $0.0 < $1.0 }.map { $0.1 }
+    }
+
+    /// All Nango providers the user hasn't configured yet, filtered by
+    /// search + active industry pack if one is chosen. Pack-matching
+    /// providers float to the top.
+    private func filteredProviders() -> [NangoClient.ProviderInfo] {
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var candidates = catalog.unconfiguredProviders()
+        if !needle.isEmpty {
+            candidates = candidates.filter {
+                $0.displayName.lowercased().contains(needle)
+                    || $0.name.lowercased().contains(needle)
+                    || $0.categories.contains(where: { $0.lowercased().contains(needle) })
+            }
+        }
+
+        // Sort: pack-matching providers first (by pack priority), then alphabetical.
+        if let pack = activePack {
+            return candidates.sorted { a, b in
+                let pa = pack.priority(for: a.name) ?? Int.max
+                let pb = pack.priority(for: b.name) ?? Int.max
+                if pa != pb { return pa < pb }
+                return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
+            }
+        }
+        return candidates
+    }
+
+    @ViewBuilder
+    private func browseRow(_ provider: NangoClient.ProviderInfo) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.secondary.opacity(0.12))
+                    .frame(width: 36, height: 36)
+                if let logo = provider.logoUrl, let url = URL(string: logo) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().aspectRatio(contentMode: .fit).padding(6)
+                        default:
+                            Image(systemName: "square.grid.2x2")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    Image(systemName: "square.grid.2x2")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 36, height: 36)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(provider.displayName)
+                    .font(.system(size: 13, weight: .medium))
+                Text(provider.categories.first?.capitalized ?? provider.authMode.lowercased())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                openNangoSetup(provider: provider)
+            } label: {
+                Text("Set up in Nango")
+                    .font(.system(size: 12))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func openNangoSetup(provider: NangoClient.ProviderInfo) {
+        // Deep-link into Nango's integration-create form with the provider
+        // pre-selected. Falls back to the generic integrations page if
+        // the deep link isn't recognised.
+        let url = URL(string: "https://app.nango.dev/prod/integrations/new?provider=\(provider.name)")
+            ?? URL(string: "https://app.nango.dev/prod/integrations")!
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: - Rows

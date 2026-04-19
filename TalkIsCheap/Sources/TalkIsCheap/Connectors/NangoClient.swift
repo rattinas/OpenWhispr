@@ -246,6 +246,33 @@ final class NangoClient: NSObject {
         struct Wrapper: Decodable { let integrations: [CatalogEntry] }
         return try JSONDecoder().decode(Wrapper.self, from: data).integrations
     }
+
+    // MARK: - Provider catalogue (all 761 Nango-supported services)
+
+    struct ProviderInfo: Decodable, Hashable {
+        let name: String
+        let displayName: String
+        let logoUrl: String?
+        let categories: [String]
+        let authMode: String
+        let docs: String?
+    }
+
+    /// Lists every provider Nango supports — used so the user can "Add a
+    /// new service" from inside the app instead of going to Nango's
+    /// dashboard blind.
+    func providers() async throws -> [ProviderInfo] {
+        guard let req = authorizedRequest(url: baseURL().appendingPathComponent("nango/providers")) else {
+            throw NangoError.notLicensed
+        }
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+            let msg = String(data: data, encoding: .utf8) ?? ""
+            throw NangoError.apiError(http.statusCode, msg.prefix(300).description)
+        }
+        struct Wrapper: Decodable { let providers: [ProviderInfo] }
+        return try JSONDecoder().decode(Wrapper.self, from: data).providers
+    }
 }
 
 // MARK: - ASWebAuthenticationPresentationContextProviding
