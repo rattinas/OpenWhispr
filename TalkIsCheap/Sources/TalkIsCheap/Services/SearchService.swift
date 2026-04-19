@@ -12,6 +12,23 @@ struct SearchResult {
     let sources: [SearchSource]
     let images: [String]
     let widgetUrl: String? // optional financial chart / TradingView link
+    // Set when result comes from a connected service rather than web search
+    let connectorId: String?
+    let connectorName: String?
+    let connectorIcon: String?
+
+    init(query: String, answer: String, sources: [SearchSource], images: [String],
+         widgetUrl: String?, connectorId: String? = nil, connectorName: String? = nil,
+         connectorIcon: String? = nil) {
+        self.query = query
+        self.answer = answer
+        self.sources = sources
+        self.images = images
+        self.widgetUrl = widgetUrl
+        self.connectorId = connectorId
+        self.connectorName = connectorName
+        self.connectorIcon = connectorIcon
+    }
 }
 
 /// Voice search: Brave Search + Claude Opus
@@ -21,23 +38,54 @@ final class SearchService {
     func search(query: String) async throws -> SearchResult {
         Log.write("Search: \(query)")
 
-        // Pro / Trial users use our proxy (bundles Brave + Claude in one call)
+        // 1. Connector routing — only when Command Mode is unlocked AND a
+        //    connected service matches the intent. If the connector errors,
+        //    prepend a warning note to the web-search answer so the user
+        //    sees *why* the connector was skipped instead of silently
+        //    getting a generic web result.
+        var connectorErrorNote: String? = nil
+        if AppSettings.shared.commandsUnlocked {
+            let intent = IntentDetector.detect(from: query)
+            let registry = ConnectorRegistry.shared
+            if let connector = registry.connector(for: intent) {
+                do {
+                    Log.write("Routing to connector: \(connector.name)")
+                    let result = try await registry.query(connector: connector, intent: intent)
+                    return SearchResult(
+                        query: query,
+                        answer: result.answer,
+                        sources: [],
+                        images: [],
+                        widgetUrl: nil,
+                        connectorId: result.connectorId,
+                        connectorName: result.connectorName,
+                        connectorIcon: result.icon
+                    )
+                } catch {
+                    Log.write("Connector \(connector.name) error: \(error.localizedDescription)")
+                    connectorErrorNote = "> ⚠️ **\(connector.name)** returned an error: \(error.localizedDescription)\n>\n> Falling back to web search.\n\n"
+                }
+            }
+        }
+
+        // 2. Pro / Trial users use our proxy (bundles Brave + Claude in one call)
         if AppSettings.shared.shouldUseProxy {
             let language = AppSettings.shared.language == "auto" ? nil : AppSettings.shared.language
             let proxyResult = try await ProxyClient.search(query: query, language: language)
             let sources = proxyResult.sources.map { SearchSource(title: $0.title, url: $0.url, thumbnail: nil) }
-            return SearchResult(query: query, answer: proxyResult.answer, sources: sources, images: proxyResult.images, widgetUrl: proxyResult.widgetUrl)
+            let answer = (connectorErrorNote ?? "") + proxyResult.answer
+            return SearchResult(query: query, answer: answer, sources: sources, images: proxyResult.images, widgetUrl: proxyResult.widgetUrl)
         }
 
-        // 1. Get web + image results from Brave
+        // BYOK path — direct Brave + Claude call
         let (webResults, imageURLs) = try await braveSearch(query: query)
         Log.write("Brave: \(webResults.count) results, \(imageURLs.count) images")
 
-        // 2. Summarize with Claude Opus
         let depth = AppSettings.shared.searchDepth
-        let answer = try await summarizeWithClaude(query: query, results: webResults, depth: depth)
-        Log.write("Claude answer: \(answer.prefix(100))...")
+        let claudeAnswer = try await summarizeWithClaude(query: query, results: webResults, depth: depth)
+        Log.write("Claude answer: \(claudeAnswer.prefix(100))...")
 
+        let answer = (connectorErrorNote ?? "") + claudeAnswer
         let sources = webResults.map { SearchSource(title: $0.title, url: $0.url, thumbnail: $0.thumbnail) }
         return SearchResult(query: query, answer: answer, sources: sources, images: imageURLs, widgetUrl: nil)
     }

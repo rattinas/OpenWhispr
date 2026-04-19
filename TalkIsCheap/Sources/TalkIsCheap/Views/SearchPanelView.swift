@@ -46,7 +46,7 @@ final class SearchPanelManager: ObservableObject {
                 backing: .buffered,
                 defer: true
             )
-            p.title = "TalkIsCheap Search"
+            p.title = "TalkIsCheap Command"
             p.isFloatingPanel = true
             p.level = .floating
             p.hasShadow = true
@@ -127,24 +127,56 @@ struct SearchResultView: View {
             CassetteView(isActive: true)
                 .scaleEffect(2.0)
                 .frame(height: 80)
-            Text("Listening...")
+            Text("Listening…")
                 .font(.title3.weight(.medium))
-            Text("Ask anything — release to search")
+            Text("Ask anything — release when you're done")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+
+            // Discoverability: show what kinds of commands work so users
+            // realise this isn't just web search.
+            if settings.commandsUnlocked {
+                VStack(alignment: .leading, spacing: 6) {
+                    exampleRow("magnifyingglass", "\"Was macht Bitcoin gerade?\"")
+                    exampleRow("cart", "\"Shopify Umsatz heute\"")
+                    exampleRow("creditcard", "\"Stripe Einnahmen diesen Monat\"")
+                    exampleRow("chevron.left.slash.chevron.right", "\"Offene GitHub Issues\"")
+                    exampleRow("chart.xyaxis.line", "\"GA4 Sessions gestern\"")
+                }
+                .padding(.top, 8)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    exampleRow("magnifyingglass", "\"Was macht Bitcoin gerade?\"")
+                    exampleRow("person", "\"Wer ist …?\"")
+                    exampleRow("chart.xyaxis.line", "\"Tesla Aktienkurs\"")
+                }
+                .padding(.top, 8)
+            }
             Spacer()
         }
         .padding(40)
     }
 
-    // MARK: - Searching
+    private func exampleRow(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .frame(width: 14)
+            Text(text)
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    // MARK: - Thinking
 
     private func searchingView(_ query: String) -> some View {
         VStack(spacing: 16) {
             Spacer()
             ProgressView()
                 .controlSize(.large)
-            Text("Searching...")
+            Text("Thinking…")
                 .font(.title3.weight(.medium))
             Text("\"" + query + "\"")
                 .font(.subheadline)
@@ -162,12 +194,27 @@ struct SearchResultView: View {
         VStack(spacing: 0) {
             // Search bar header
             HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                    .font(.system(size: 14))
+                if let icon = result.connectorIcon {
+                    Image(systemName: icon)
+                        .foregroundStyle(.secondary)
+                        .font(.system(size: 14))
+                } else {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                        .font(.system(size: 14))
+                }
                 Text(result.query)
                     .font(.system(size: 15, weight: .medium))
                     .lineLimit(1)
+                if let name = result.connectorName {
+                    Text(name)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.accentColor.opacity(0.8))
+                        .clipShape(Capsule())
+                }
                 Spacer()
                 Button {
                     NSPasteboard.general.clearContents()
@@ -346,7 +393,7 @@ struct SearchResultView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 36))
                 .foregroundStyle(.orange)
-            Text("Search Failed")
+            Text("Command Failed")
                 .font(.title3.weight(.medium))
             Text(message)
                 .font(.subheadline)

@@ -21,11 +21,14 @@ struct SettingsView: View {
             }
             DictionaryView().tabItem { Label("Dictionary", systemImage: "book") }.tag("dictionary")
             modesTab.tabItem { Label("Modes", systemImage: "sparkles") }.tag("modes")
+            if settings.commandsUnlocked {
+                ConnectedServicesView().tabItem { Label("Services", systemImage: "link.circle") }.tag("services")
+            }
             licenseTab.tabItem { Label("License", systemImage: "lock.shield") }.tag("license")
             updatesTab.tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }.tag("updates")
             aboutTab.tabItem { Label("About", systemImage: "info.circle") }.tag("about")
         }
-        .frame(width: 540, height: 460)
+        .frame(width: 560, height: 480)
         .sheet(isPresented: $showNewScenario) { newScenarioSheet }
         .sheet(item: $editingPromptFor) { mode in editPromptSheet(mode: mode) }
         .sheet(isPresented: $showingFeedback) { FeedbackView() }
