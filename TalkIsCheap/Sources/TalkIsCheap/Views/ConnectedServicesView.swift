@@ -2,9 +2,9 @@ import SwiftUI
 import AppKit
 
 struct ConnectedServicesView: View {
-    @ObservedObject private var catalog = NangoCatalog.shared
+    @ObservedObject private var catalog = PipedreamCatalog.shared
     @ObservedObject private var settings = AppSettings.shared
-    @State private var connectingTo: NangoClient.CatalogEntry?
+    @State private var connectingApp: PipedreamClient.AppInfo?
     @State private var oauthError: String?
     @State private var isOAuthing = false
     @State private var search = ""
@@ -17,7 +17,7 @@ struct ConnectedServicesView: View {
     var body: some View {
         Form {
             Section {
-                Text("Connect your tools via one-click OAuth. When you use Command Mode (double-tap hotkey), TalkIsCheap detects which service you're asking about and answers from live data.")
+                Text("Connect any of your business tools. When you use Command Mode (double-tap hotkey), TalkIsCheap asks the right service and answers from live data. All OAuth is managed — no tokens to copy.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -37,7 +37,7 @@ struct ConnectedServicesView: View {
                             Image(systemName: "arrow.clockwise")
                         }
                         .buttonStyle(.borderless)
-                        .help("Refresh list from Nango")
+                        .help("Refresh")
                     }
                 }
                 .padding(6)
@@ -51,83 +51,65 @@ struct ConnectedServicesView: View {
                 }
             }
 
-            if catalog.entries.isEmpty && !catalog.isLoading {
+            // Connected accounts first — always shown.
+            if !catalog.accounts.isEmpty {
                 Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("No integrations configured yet.")
-                            .font(.system(size: 13, weight: .medium))
-                        Text("Add integrations in your Nango dashboard at app.nango.dev — they'll show up here automatically.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Link("Open Nango Dashboard", destination: URL(string: "https://app.nango.dev")!)
-                            .font(.caption)
+                    ForEach(catalog.accounts, id: \.id) { account in
+                        connectedRow(account)
+                    }
+                } header: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("Connected")
                     }
                 }
-            } else {
-                // Industry-prioritised "Recommended for you" section when a pack is picked.
-                if let pack = activePack {
-                    let recommended = entriesForPack(pack)
-                    if !recommended.isEmpty {
-                        Section {
-                            ForEach(recommended, id: \.uniqueKey) { entry in
-                                row(entry, highlight: true)
-                            }
-                        } header: {
-                            HStack(spacing: 6) {
-                                Text(pack.emoji)
-                                Text("Recommended for \(pack.name)")
-                            }
-                        } footer: {
-                            Text(pack.tagline).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
+            }
 
-                // All other services, grouped by category.
-                ForEach(filteredGroups(), id: \.0) { cat, list in
+            // "Recommended for <industry>" when a pack is selected.
+            if let pack = activePack {
+                let recommended = appsForPack(pack)
+                if !recommended.isEmpty {
                     Section {
-                        ForEach(list, id: \.uniqueKey) { entry in
-                            row(entry)
+                        ForEach(recommended.prefix(25), id: \.slug) { app in
+                            appRow(app, highlight: true)
                         }
                     } header: {
                         HStack(spacing: 6) {
-                            Image(systemName: NangoCategoryDisplay.icon(cat))
-                            Text(NangoCategoryDisplay.label(cat))
-                        }
-                    }
-                }
-
-                // Browse all 761 Nango providers. Each row opens Nango's
-                // dashboard at the right integration-create page.
-                let browseList = filteredProviders()
-                if !browseList.isEmpty {
-                    Section {
-                        ForEach(browseList.prefix(40), id: \.name) { p in
-                            browseRow(p)
-                        }
-                        if browseList.count > 40 {
-                            Text("\(browseList.count - 40) more matching — type in the search box to narrow down.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    } header: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "square.grid.3x3.fill")
-                            Text("Add more services")
+                            Text(pack.emoji)
+                            Text("Recommended for \(pack.name)")
                         }
                     } footer: {
-                        Text("Pick a service → we open Nango's dashboard with the provider pre-selected. Complete the 30-second setup (Nango uses shared OAuth for most), then come back and refresh.")
+                        Text(pack.tagline).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            // All apps grouped by category.
+            ForEach(groupedApps(), id: \.0) { cat, list in
+                Section {
+                    ForEach(list.prefix(30), id: \.slug) { app in
+                        appRow(app)
+                    }
+                    if list.count > 30 {
+                        Text("\(list.count - 30) more — type in the search box above.")
                             .font(.caption).foregroundStyle(.secondary)
+                    }
+                } header: {
+                    HStack(spacing: 6) {
+                        Image(systemName: NangoCategoryDisplay.icon(cat))
+                        Text(NangoCategoryDisplay.label(cat))
                     }
                 }
             }
         }
         .formStyle(.grouped)
-        .task { if catalog.entries.isEmpty { await catalog.refresh() } }
+        .task { if catalog.apps.isEmpty { await catalog.refresh() } }
         .sheet(item: Binding(
-            get: { connectingTo.map { EntryWrapper(entry: $0) } },
-            set: { connectingTo = $0?.entry }
+            get: { connectingApp.map { AppWrapper(app: $0) } },
+            set: { connectingApp = $0?.app }
         )) { wrapper in
-            connectSheet(entry: wrapper.entry)
+            connectSheet(app: wrapper.app)
         }
     }
 
@@ -170,86 +152,63 @@ struct ConnectedServicesView: View {
         .help(tagline)
     }
 
-    /// Filter entries that belong to this pack (by Nango provider name) —
-    /// and sort them by the pack's suggested priority order.
-    private func entriesForPack(_ pack: IndustryPack) -> [NangoClient.CatalogEntry] {
+    // MARK: - Filtering
+
+    private func matchesSearch(_ app: PipedreamClient.AppInfo) -> Bool {
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let matched = catalog.entries.compactMap { entry -> (Int, NangoClient.CatalogEntry)? in
-            guard let pos = pack.priority(for: entry.provider) else { return nil }
-            if !needle.isEmpty, !entry.displayName.lowercased().contains(needle),
-               !entry.provider.lowercased().contains(needle) {
-                return nil
-            }
-            return (pos, entry)
+        if needle.isEmpty { return true }
+        return app.name.lowercased().contains(needle)
+            || app.slug.lowercased().contains(needle)
+            || app.categories.contains { $0.lowercased().contains(needle) }
+    }
+
+    private func connectedSlugs() -> Set<String> {
+        Set(catalog.accounts.map { $0.appSlug.lowercased() })
+    }
+
+    private func appsForPack(_ pack: IndustryPack) -> [PipedreamClient.AppInfo] {
+        let connected = connectedSlugs()
+        let matched: [(Int, PipedreamClient.AppInfo)] = catalog.apps.compactMap { app in
+            guard matchesSearch(app) else { return nil }
+            if connected.contains(app.slug.lowercased()) { return nil }
+            guard let pos = pack.priority(for: app.slug) else { return nil }
+            return (pos, app)
         }
         return matched.sorted { $0.0 < $1.0 }.map { $0.1 }
     }
 
-    /// All Nango providers the user hasn't configured yet, filtered by
-    /// search + active industry pack if one is chosen. Pack-matching
-    /// providers float to the top.
-    private func filteredProviders() -> [NangoClient.ProviderInfo] {
-        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        var candidates = catalog.unconfiguredProviders()
-        if !needle.isEmpty {
-            candidates = candidates.filter {
-                $0.displayName.lowercased().contains(needle)
-                    || $0.name.lowercased().contains(needle)
-                    || $0.categories.contains(where: { $0.lowercased().contains(needle) })
-            }
+    private func groupedApps() -> [(String, [PipedreamClient.AppInfo])] {
+        let connected = connectedSlugs()
+        var buckets: [String: [PipedreamClient.AppInfo]] = [:]
+        for app in catalog.apps where matchesSearch(app) {
+            if connected.contains(app.slug.lowercased()) { continue }
+            buckets[catalog.category(for: app), default: []].append(app)
         }
-
-        // Sort: pack-matching providers first (by pack priority), then alphabetical.
-        if let pack = activePack {
-            return candidates.sorted { a, b in
-                let pa = pack.priority(for: a.name) ?? Int.max
-                let pb = pack.priority(for: b.name) ?? Int.max
-                if pa != pb { return pa < pb }
-                return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
-            }
+        let order = ["ecommerce", "marketing", "dev", "recruiting", "productivity", "other"]
+        return order.compactMap { cat in
+            guard let list = buckets[cat], !list.isEmpty else { return nil }
+            return (cat, list)
         }
-        return candidates
     }
 
+    // MARK: - Rows
+
     @ViewBuilder
-    private func browseRow(_ provider: NangoClient.ProviderInfo) -> some View {
+    private func connectedRow(_ account: PipedreamClient.Account) -> some View {
         HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.secondary.opacity(0.12))
-                    .frame(width: 36, height: 36)
-                if let logo = provider.logoUrl, let url = URL(string: logo) {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let img):
-                            img.resizable().aspectRatio(contentMode: .fit).padding(6)
-                        default:
-                            Image(systemName: "square.grid.2x2")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                } else {
-                    Image(systemName: "square.grid.2x2")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 36, height: 36)
-
+            appIcon(logo: account.appLogo)
             VStack(alignment: .leading, spacing: 2) {
-                Text(provider.displayName)
+                Text(account.appName.isEmpty ? account.appSlug : account.appName)
                     .font(.system(size: 13, weight: .medium))
-                Text(provider.categories.first?.capitalized ?? provider.authMode.lowercased())
+                Label("Connected", systemImage: "checkmark.circle.fill")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.green)
             }
-
             Spacer()
-
-            Button {
-                openNangoSetup(provider: provider)
+            Button(role: .destructive) {
+                Task { await disconnect(account) }
             } label: {
-                Text("Set up in Nango")
-                    .font(.system(size: 12))
+                Text("Disconnect").font(.system(size: 12))
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -257,83 +216,37 @@ struct ConnectedServicesView: View {
         .padding(.vertical, 2)
     }
 
-    private func openNangoSetup(provider: NangoClient.ProviderInfo) {
-        // Deep-link into Nango's integration-create form with the provider
-        // pre-selected. Falls back to the generic integrations page if
-        // the deep link isn't recognised.
-        let url = URL(string: "https://app.nango.dev/prod/integrations/new?provider=\(provider.name)")
-            ?? URL(string: "https://app.nango.dev/prod/integrations")!
-        NSWorkspace.shared.open(url)
-    }
-
-    // MARK: - Rows
-
-    private func filteredGroups() -> [(String, [NangoClient.CatalogEntry])] {
-        let groups = catalog.grouped()
-        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return groups }
-        return groups.compactMap { cat, list in
-            let filtered = list.filter {
-                $0.displayName.lowercased().contains(needle)
-                    || $0.provider.lowercased().contains(needle)
-                    || $0.uniqueKey.lowercased().contains(needle)
-            }
-            return filtered.isEmpty ? nil : (cat, filtered)
-        }
-    }
-
     @ViewBuilder
-    private func row(_ entry: NangoClient.CatalogEntry, highlight: Bool = false) -> some View {
+    private func appRow(_ app: PipedreamClient.AppInfo, highlight: Bool = false) -> some View {
         HStack(spacing: 12) {
-            integrationIcon(entry)
-
+            appIcon(logo: app.logo)
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.displayName)
+                Text(app.name)
                     .font(.system(size: 13, weight: highlight ? .semibold : .medium))
-                if entry.connected {
-                    Label("Connected", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                } else {
-                    Text(entry.provider)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text(app.categories.first?.capitalized ?? app.authType.capitalized)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-
             Spacer()
-
-            if entry.connected {
-                Button(role: .destructive) {
-                    Task { await disconnect(entry) }
-                } label: {
-                    Text("Disconnect")
-                        .font(.system(size: 12))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            } else {
-                Button {
-                    oauthError = nil
-                    connectingTo = entry
-                } label: {
-                    Text("Connect")
-                        .font(.system(size: 12))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+            Button {
+                oauthError = nil
+                connectingApp = app
+            } label: {
+                Text("Connect").font(.system(size: 12))
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
         }
         .padding(.vertical, 2)
     }
 
     @ViewBuilder
-    private func integrationIcon(_ entry: NangoClient.CatalogEntry) -> some View {
+    private func appIcon(logo: String?) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.secondary.opacity(0.12))
                 .frame(width: 36, height: 36)
-            if let logo = entry.logo, let url = URL(string: logo) {
+            if let logo, let url = URL(string: logo) {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let img):
@@ -344,8 +257,7 @@ struct ConnectedServicesView: View {
                     }
                 }
             } else {
-                Image(systemName: "square.grid.2x2")
-                    .foregroundStyle(.secondary)
+                Image(systemName: "square.grid.2x2").foregroundStyle(.secondary)
             }
         }
         .frame(width: 36, height: 36)
@@ -353,14 +265,14 @@ struct ConnectedServicesView: View {
 
     // MARK: - Connect sheet
 
-    private func connectSheet(entry: NangoClient.CatalogEntry) -> some View {
+    private func connectSheet(app: PipedreamClient.AppInfo) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                integrationIcon(entry)
+                appIcon(logo: app.logo)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Connect \(entry.displayName)")
+                    Text("Connect \(app.name)")
                         .font(.headline)
-                    Text("You authorise TalkIsCheap to read your data through your \(entry.provider) account. Nothing is stored on our side other than the Nango connection ID.")
+                    Text("A browser window opens so you can sign in to \(app.name). No credentials pass through our servers.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -371,7 +283,7 @@ struct ConnectedServicesView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 14) {
-                Text("A browser window will open so you can sign in to \(entry.provider). After you approve access, come back here — TalkIsCheap will detect the new connection automatically.")
+                Text("After you approve access, come back here — TalkIsCheap detects the new connection automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -394,7 +306,7 @@ struct ConnectedServicesView: View {
 
             HStack {
                 Button("Cancel") {
-                    connectingTo = nil
+                    connectingApp = nil
                     oauthError = nil
                 }
                 .keyboardShortcut(.cancelAction)
@@ -402,7 +314,7 @@ struct ConnectedServicesView: View {
                 Spacer()
 
                 Button {
-                    Task { await startOAuth(entry: entry) }
+                    Task { await startOAuth(app: app) }
                 } label: {
                     HStack(spacing: 8) {
                         if isOAuthing { ProgressView().scaleEffect(0.6) }
@@ -423,26 +335,22 @@ struct ConnectedServicesView: View {
 
     // MARK: - Actions
 
-    private func startOAuth(entry: NangoClient.CatalogEntry) async {
+    private func startOAuth(app: PipedreamClient.AppInfo) async {
         isOAuthing = true
         oauthError = nil
         do {
-            _ = try await NangoClient.shared.connect(integrationKey: entry.uniqueKey)
+            _ = try await PipedreamClient.shared.connect(app: app.slug)
             await catalog.refresh()
-            connectingTo = nil
+            connectingApp = nil
         } catch {
             oauthError = error.localizedDescription
         }
         isOAuthing = false
     }
 
-    private func disconnect(_ entry: NangoClient.CatalogEntry) async {
-        guard let connectionId = entry.connectionId else { return }
+    private func disconnect(_ account: PipedreamClient.Account) async {
         do {
-            try await NangoClient.shared.disconnect(
-                integrationKey: entry.uniqueKey,
-                connectionId: connectionId
-            )
+            try await PipedreamClient.shared.disconnect(accountId: account.id)
             await catalog.refresh()
         } catch {
             oauthError = error.localizedDescription
@@ -450,7 +358,7 @@ struct ConnectedServicesView: View {
     }
 }
 
-private struct EntryWrapper: Identifiable {
-    let entry: NangoClient.CatalogEntry
-    var id: String { entry.uniqueKey }
+private struct AppWrapper: Identifiable {
+    let app: PipedreamClient.AppInfo
+    var id: String { app.slug }
 }
