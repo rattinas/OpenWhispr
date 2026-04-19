@@ -36,7 +36,7 @@ final class HotkeyManager {
     /// Reset toggle state (call when recording is cancelled externally so the
     /// next hotkey press starts a new recording rather than trying to stop one).
     func resetToggleState() {
-        toggleRecordingActive = false
+        toggleState = .idle
     }
 
     func start() {
@@ -201,14 +201,21 @@ final class HotkeyManager {
     // 2. Double-tap (<0.4s between taps) → voice search
     //
     // In toggle mode (AppSettings.toggleRecordingMode):
-    //   First press → start dictation; second press → stop.
+    //   • 1 press (idle)           → start dictation
+    //   • 1 press (while dictating) → stop + paste
+    //   • Double-tap (idle)        → start voice search
+    //   • 1 press (while searching) → stop + submit query
+    // A second press arriving inside `doubleTapWindow` after the first
+    // promotes the in-flight dictation to a search instead.
     //
     // Solution: Start dictation IMMEDIATELY on press (zero latency for hold).
     // On quick release (<0.3s), cancel dictation (too short for meaningful audio)
     // and remember the tap time for double-tap detection.
 
     private var dictationStarted = false
-    private var toggleRecordingActive = false
+    private enum ToggleState { case idle, dictating, searching }
+    private var toggleState: ToggleState = .idle
+    private var lastTogglePressTime: TimeInterval = 0
     private let holdThreshold: TimeInterval = 0.3  // releases shorter than this = tap, not dictation
 
     private func handleControlEvent(pressed: Bool, isOtherKey: Bool) {
@@ -222,20 +229,45 @@ final class HotkeyManager {
             if pressed && !controlIsDown {
                 controlIsDown = true
                 otherKeyPressed = false
-                if toggleRecordingActive {
-                    // Second press: stop recording
-                    toggleRecordingActive = false
-                    Log.write("TOGGLE: STOP")
-                    DispatchQueue.main.async { [weak self] in self?.onKeyUp?() }
-                } else {
-                    // First press: start recording
-                    toggleRecordingActive = true
-                    Log.write("TOGGLE: START")
+                let now = ProcessInfo.processInfo.systemUptime
+                let sinceLastPress = now - lastTogglePressTime
+                let isDoubleTap = lastTogglePressTime > 0 && sinceLastPress < doubleTapWindow
+                lastTogglePressTime = now
+
+                switch toggleState {
+                case .idle:
+                    // First press of a fresh cycle → start dictation.
+                    toggleState = .dictating
+                    Log.write("TOGGLE: DICTATE START")
                     DispatchQueue.main.async { [weak self] in self?.onKeyDown?() }
+                case .dictating:
+                    if isDoubleTap {
+                        // Second press landed inside the double-tap window —
+                        // the user actually wanted voice search. Cancel the
+                        // dictation we just started and start search instead.
+                        toggleState = .searching
+                        lastTogglePressTime = 0
+                        Log.write("TOGGLE: SEARCH (double-tap promoted)")
+                        DispatchQueue.main.async { [weak self] in
+                            self?.onCancel?()
+                            self?.onSearchKeyDown?()
+                        }
+                    } else {
+                        // Normal toggle-off → stop + paste.
+                        toggleState = .idle
+                        Log.write("TOGGLE: DICTATE STOP")
+                        DispatchQueue.main.async { [weak self] in self?.onKeyUp?() }
+                    }
+                case .searching:
+                    // Any subsequent press ends the search and submits the query.
+                    toggleState = .idle
+                    lastTogglePressTime = 0
+                    Log.write("TOGGLE: SEARCH STOP")
+                    DispatchQueue.main.async { [weak self] in self?.onSearchKeyUp?() }
                 }
             } else if !pressed {
                 controlIsDown = false
-                // In toggle mode, key release doesn't stop recording
+                // Key release never drives state in toggle mode.
             }
             return
         }
