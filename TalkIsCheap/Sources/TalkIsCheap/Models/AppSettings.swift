@@ -66,6 +66,12 @@ final class AppSettings: ObservableObject {
     // Recording mode
     @AppStorage("toggleRecordingMode") var toggleRecordingMode: Bool = false
 
+    // Command Mode — double-tap voice search extended with connected
+    // services (Shopify / Stripe / GitHub / Google Analytics / …).
+    // Staged rollout: flip on with:
+    //   defaults write com.talkischeap.app commandsUnlocked -bool true
+    @AppStorage("commandsUnlocked") var commandsUnlocked: Bool = false
+
     static let languages: [(code: String, name: String)] = [
         ("auto", "Auto-Detect"),
         ("de", "Deutsch"),
