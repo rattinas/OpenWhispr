@@ -63,6 +63,9 @@ final class AppSettings: ObservableObject {
     @AppStorage("activePolishMode") var activePolishMode: String = "clean"
     @AppStorage("appAwareContext") var appAwareContext: Bool = true
 
+    // Recording mode
+    @AppStorage("toggleRecordingMode") var toggleRecordingMode: Bool = false
+
     static let languages: [(code: String, name: String)] = [
         ("auto", "Auto-Detect"),
         ("de", "Deutsch"),

@@ -10,11 +10,33 @@ final class SearchPanelManager: ObservableObject {
         case listening
         case searching(query: String)
         case result(SearchResult)
+        case streaming(query: String, partialAnswer: String, sources: [SearchSource], images: [String], widgetUrl: String?)
         case error(String)
     }
 
     @Published var state: State = .hidden
     private var panel: NSPanel?
+
+    // MARK: Streaming helpers
+
+    func startStreaming(query: String) {
+        state = .streaming(query: query, partialAnswer: "", sources: [], images: [], widgetUrl: nil)
+    }
+
+    func updateStreamingSources(sources: [SearchSource], images: [String], widgetUrl: String?) {
+        guard case .streaming(let q, let a, _, _, _) = state else { return }
+        state = .streaming(query: q, partialAnswer: a, sources: sources, images: images, widgetUrl: widgetUrl)
+    }
+
+    func appendStreamingDelta(_ text: String) {
+        guard case .streaming(let q, let a, let s, let i, let w) = state else { return }
+        state = .streaming(query: q, partialAnswer: a + text, sources: s, images: i, widgetUrl: w)
+    }
+
+    func finalizeStreaming() {
+        guard case .streaming(let q, let a, let s, let i, let w) = state else { return }
+        state = .result(SearchResult(query: q, answer: a, sources: s, images: i, widgetUrl: w))
+    }
 
     func show() {
         if panel == nil {
@@ -82,6 +104,14 @@ struct SearchResultView: View {
                 searchingView(query)
             case .result(let result):
                 resultView(result)
+            case .streaming(let query, let partialAnswer, let sources, let images, let widgetUrl):
+                resultView(SearchResult(
+                    query: query,
+                    answer: partialAnswer.isEmpty ? "…" : partialAnswer,
+                    sources: sources,
+                    images: images,
+                    widgetUrl: widgetUrl
+                ))
             case .error(let msg):
                 errorView(msg)
             }
@@ -206,6 +236,28 @@ struct SearchResultView: View {
                             .lineSpacing(6)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    // Financial widget link (crypto / stock queries)
+                    if let widgetUrl = result.widgetUrl, let url = URL(string: widgetUrl) {
+                        Button {
+                            NSWorkspace.shared.open(url)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "chart.xyaxis.line")
+                                    .foregroundStyle(Color(red: 0.95, green: 0.35, blue: 0.25))
+                                Text("View Chart on TradingView")
+                                    .font(.system(size: 13, weight: .medium))
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(10)
+                            .background(Color(red: 0.95, green: 0.35, blue: 0.25).opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.borderless)
                     }
 
                     // Sources

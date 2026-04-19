@@ -144,10 +144,9 @@ final class StreamingTranscriber: NSObject, ObservableObject {
         }
 
         // Silence pad so Deepgram's VAD reliably fires the end-of-utterance
-        // detector. 300 ms is enough for even a hesitating tail — the server
-        // processes this as silence (no speech inference cost) so the added
-        // latency is mostly the 300 ms of audio itself.
-        let silenceFrames = 16000 * MemoryLayout<Int16>.size * 30 / 100 // 300 ms @ 16 kHz int16
+        // detector. 150 ms is sufficient for most tails; cut from 300 ms to
+        // halve the added latency while still triggering the VAD reliably.
+        let silenceFrames = 16000 * MemoryLayout<Int16>.size * 15 / 100 // 150 ms @ 16 kHz int16
         let silence = Data(count: silenceFrames)
         task.send(.data(silence)) { _ in }
 

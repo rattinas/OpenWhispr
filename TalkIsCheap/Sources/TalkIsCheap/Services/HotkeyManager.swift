@@ -33,6 +33,12 @@ final class HotkeyManager {
 
     var isHandsFree: Bool { isHandsFreeMode }
 
+    /// Reset toggle state (call when recording is cancelled externally so the
+    /// next hotkey press starts a new recording rather than trying to stop one).
+    func resetToggleState() {
+        toggleRecordingActive = false
+    }
+
     func start() {
         stop()
 
@@ -68,7 +74,12 @@ final class HotkeyManager {
             let cmd = event.modifierFlags.contains(.command)
             handleModifierEvent(ctrl: ctrl, cmd: cmd)
         } else if isModifierHotkey {
-            handleControlEvent(pressed: event.modifierFlags.contains(.control), isOtherKey: event.type == .keyDown)
+            // Don't treat Cmd+key presses (e.g. Cmd+Shift+3/4 screenshots)
+            // as "other keys" that would cancel dictation — let them pass through.
+            let isCmdCombo = event.modifierFlags.contains(.command)
+            if !isCmdCombo {
+                handleControlEvent(pressed: event.modifierFlags.contains(.control), isOtherKey: event.type == .keyDown)
+            }
         } else {
             handleRegularNSEvent(event)
         }
@@ -123,7 +134,9 @@ final class HotkeyManager {
             let cmd = event.flags.contains(.maskCommand)
             if type == .flagsChanged {
                 handleModifierEvent(ctrl: ctrl, cmd: cmd)
-            } else if type == .keyDown && controlIsDown {
+            } else if type == .keyDown && controlIsDown && !cmd {
+                // Skip Cmd+key combos (e.g. Cmd+Shift+3/4 screenshots) so they
+                // don't cancel dictation — the event still passes through.
                 handleControlEvent(pressed: ctrl, isOtherKey: true)
             }
         } else {
@@ -187,16 +200,43 @@ final class HotkeyManager {
     // 1. Long hold (>0.3s) → push-to-talk dictation (start on press, stop on release)
     // 2. Double-tap (<0.4s between taps) → voice search
     //
+    // In toggle mode (AppSettings.toggleRecordingMode):
+    //   First press → start dictation; second press → stop.
+    //
     // Solution: Start dictation IMMEDIATELY on press (zero latency for hold).
     // On quick release (<0.3s), cancel dictation (too short for meaningful audio)
     // and remember the tap time for double-tap detection.
 
     private var dictationStarted = false
+    private var toggleRecordingActive = false
     private let holdThreshold: TimeInterval = 0.3  // releases shorter than this = tap, not dictation
 
     private func handleControlEvent(pressed: Bool, isOtherKey: Bool) {
         if isOtherKey && controlIsDown {
             otherKeyPressed = true
+            return
+        }
+
+        // ── Toggle recording mode ─────────────────────────────────────────
+        if AppSettings.shared.toggleRecordingMode {
+            if pressed && !controlIsDown {
+                controlIsDown = true
+                otherKeyPressed = false
+                if toggleRecordingActive {
+                    // Second press: stop recording
+                    toggleRecordingActive = false
+                    Log.write("TOGGLE: STOP")
+                    DispatchQueue.main.async { [weak self] in self?.onKeyUp?() }
+                } else {
+                    // First press: start recording
+                    toggleRecordingActive = true
+                    Log.write("TOGGLE: START")
+                    DispatchQueue.main.async { [weak self] in self?.onKeyDown?() }
+                }
+            } else if !pressed {
+                controlIsDown = false
+                // In toggle mode, key release doesn't stop recording
+            }
             return
         }
 

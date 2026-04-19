@@ -174,6 +174,7 @@ enum ProxyClient {
         let answer: String
         let sources: [(title: String, url: String, description: String)]
         let images: [String]
+        let widgetUrl: String?
     }
 
     static func search(query: String, language: String?) async throws -> SearchResult {
@@ -208,9 +209,97 @@ enum ProxyClient {
                 )
             }
             let images = (json["images"] as? [String]) ?? []
-            return SearchResult(answer: answer, sources: sourceList, images: images)
+            let widgetUrl = json["widgetUrl"] as? String
+            return SearchResult(answer: answer, sources: sourceList, images: images, widgetUrl: widgetUrl)
         }
         throw parseError(data: data, status: httpResponse.statusCode)
+    }
+
+    // MARK: - Streaming Search (SSE)
+
+    enum SearchStreamEvent {
+        case sources(
+            sources: [(title: String, url: String, description: String)],
+            images: [String],
+            widgetUrl: String?
+        )
+        case delta(text: String)
+        case done
+    }
+
+    /// Streams the search response via SSE. The server sends sources first
+    /// (as soon as Brave completes), then Claude text deltas word-by-word.
+    static func searchStreaming(
+        query: String,
+        language: String?
+    ) -> AsyncThrowingStream<SearchStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    guard var request = buildRequest(path: "/search") else {
+                        continuation.finish(throwing: ProxyError.networkError("Invalid URL"))
+                        return
+                    }
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.timeoutInterval = 45
+
+                    var bodyDict: [String: Any] = [
+                        "query": query,
+                        "model": AppSettings.shared.searchModel,
+                        "stream": true,
+                    ]
+                    if let lang = language, lang != "auto" { bodyDict["language"] = lang }
+                    request.httpBody = try JSONSerialization.data(withJSONObject: bodyDict)
+
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        continuation.finish(throwing: ProxyError.networkError("Invalid response"))
+                        return
+                    }
+
+                    if httpResponse.statusCode != 200 {
+                        var errorData = Data()
+                        for try await byte in bytes { errorData.append(byte) }
+                        continuation.finish(throwing: parseError(data: errorData, status: httpResponse.statusCode))
+                        return
+                    }
+
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data: ") else { continue }
+                        let jsonStr = String(line.dropFirst(6))
+                        guard let data = jsonStr.data(using: .utf8),
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                        else { continue }
+
+                        switch json["type"] as? String ?? "" {
+                        case "sources":
+                            let rawSources = (json["sources"] as? [[String: Any]] ?? []).map { d in
+                                (
+                                    title: d["title"] as? String ?? "",
+                                    url: d["url"] as? String ?? "",
+                                    description: d["description"] as? String ?? ""
+                                )
+                            }
+                            let images = json["images"] as? [String] ?? []
+                            let widget = json["widgetUrl"] as? String
+                            continuation.yield(.sources(sources: rawSources, images: images, widgetUrl: widget))
+                        case "delta":
+                            if let text = json["text"] as? String {
+                                continuation.yield(.delta(text: text))
+                            }
+                        case "done":
+                            continuation.finish()
+                            return
+                        default:
+                            break
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Subscription Status

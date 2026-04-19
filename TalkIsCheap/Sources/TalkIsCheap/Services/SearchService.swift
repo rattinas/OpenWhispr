@@ -10,7 +10,8 @@ struct SearchResult {
     let query: String
     let answer: String
     let sources: [SearchSource]
-    let images: [String] // image URLs from search results
+    let images: [String]
+    let widgetUrl: String? // optional financial chart / TradingView link
 }
 
 /// Voice search: Brave Search + Claude Opus
@@ -25,7 +26,7 @@ final class SearchService {
             let language = AppSettings.shared.language == "auto" ? nil : AppSettings.shared.language
             let proxyResult = try await ProxyClient.search(query: query, language: language)
             let sources = proxyResult.sources.map { SearchSource(title: $0.title, url: $0.url, thumbnail: nil) }
-            return SearchResult(query: query, answer: proxyResult.answer, sources: sources, images: proxyResult.images)
+            return SearchResult(query: query, answer: proxyResult.answer, sources: sources, images: proxyResult.images, widgetUrl: proxyResult.widgetUrl)
         }
 
         // 1. Get web + image results from Brave
@@ -38,7 +39,7 @@ final class SearchService {
         Log.write("Claude answer: \(answer.prefix(100))...")
 
         let sources = webResults.map { SearchSource(title: $0.title, url: $0.url, thumbnail: $0.thumbnail) }
-        return SearchResult(query: query, answer: answer, sources: sources, images: imageURLs)
+        return SearchResult(query: query, answer: answer, sources: sources, images: imageURLs, widgetUrl: nil)
     }
 
     // MARK: - Brave Search
