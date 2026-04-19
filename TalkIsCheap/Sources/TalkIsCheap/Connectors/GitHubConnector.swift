@@ -24,6 +24,37 @@ final class GitHubConnector: Connector {
     ]
 
     let serviceNames: [String] = ["github", "git hub", "git-hub"]
+    let category: ConnectorCategory = .dev
+
+    let setupGuide: [SetupStep] = [
+        SetupStep(
+            "1. Create a fine-grained Personal Access Token",
+            detail: "Fine-grained tokens are scoped per-repo and safer than classic PATs. This button opens the creation page directly.",
+            actionLabel: "Create fine-grained PAT",
+            actionURL: "https://github.com/settings/personal-access-tokens/new"
+        ),
+        SetupStep(
+            "2. Token name + expiration",
+            detail: "Name: \"TalkIsCheap\". Expiration: 1 year is a good default (shorter = safer, but you'll have to rotate). Resource owner: pick yourself or the org whose repos you want to query."
+        ),
+        SetupStep(
+            "3. Repository access",
+            detail: "\"All repositories\" covers everything under the resource owner. Or pick specific repos. \"Public repositories (read-only)\" is the most restrictive option."
+        ),
+        SetupStep(
+            "4. Permissions — Repository access",
+            detail: "Set the following to READ-only. Everything else stays 'No access':",
+            copyable: "Contents: Read-only\nIssues: Read-only\nPull requests: Read-only\nMetadata: Read-only"
+        ),
+        SetupStep(
+            "5. Generate token + copy once",
+            detail: "GitHub shows the token on the next page — copy it immediately, you can't see it again. Starts with github_pat_."
+        ),
+        SetupStep(
+            "6. Optional: pin a default repo",
+            detail: "If you leave Owner + Repo empty below, \"open issues\" queries will look at all your repos. Set them to focus queries on one project (e.g. owner: bene, repo: TalkIsCheap)."
+        ),
+    ]
 
     // MARK: Credential fields
 

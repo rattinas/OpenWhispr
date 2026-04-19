@@ -10,7 +10,22 @@ final class ConnectorRegistry: ObservableObject {
         StripeConnector.shared,
         GitHubConnector.shared,
         GoogleAnalyticsConnector.shared,
+        GoogleAdsConnector.shared,
+        MetaAdsConnector.shared,
     ]
+
+    /// Connectors grouped by category for the settings UI.
+    func connectorsByCategory() -> [(ConnectorCategory, [any Connector])] {
+        var grouped: [ConnectorCategory: [any Connector]] = [:]
+        for c in allConnectors {
+            grouped[c.category, default: []].append(c)
+        }
+        // Return categories in a stable order matching the enum case order.
+        return ConnectorCategory.allCases.compactMap { cat in
+            guard let list = grouped[cat], !list.isEmpty else { return nil }
+            return (cat, list)
+        }
+    }
 
     // 15-minute result cache: key = "connectorId:normalizedQuery"
     private var cache: [String: ConnectorResult] = [:]

@@ -23,6 +23,37 @@ final class ShopifyConnector: Connector {
     ]
 
     let serviceNames: [String] = ["shopify"]
+    let category: ConnectorCategory = .ecommerce
+
+    let setupGuide: [SetupStep] = [
+        SetupStep(
+            "1. Open your store's Custom Apps page",
+            detail: "Replace YOURSTORE with your store handle (the part before .myshopify.com). If you're not sure, open admin.shopify.com first — the URL will show it.",
+            actionLabel: "Open admin.shopify.com",
+            actionURL: "https://admin.shopify.com"
+        ),
+        SetupStep(
+            "2. Settings → Apps and sales channels → Develop apps",
+            detail: "If 'Develop apps' is greyed out, click 'Allow custom app development' and confirm — only needs to happen once per store."
+        ),
+        SetupStep(
+            "3. Create an app",
+            detail: "Name it something like \"TalkIsCheap Read-only\". The name only shows up in the store admin, not publicly."
+        ),
+        SetupStep(
+            "4. Configure Admin API scopes",
+            detail: "Tick the READ permissions for what you want to query. Minimum recommended:",
+            copyable: "read_orders\nread_products\nread_customers\nread_inventory"
+        ),
+        SetupStep(
+            "5. Install app → Reveal token once",
+            detail: "After clicking 'Install app' the Admin API access token appears. Shopify only shows it ONCE — copy it immediately. It starts with shpat_."
+        ),
+        SetupStep(
+            "6. Paste token + shop domain below",
+            detail: "Shop domain is the full mystore.myshopify.com form. Token is the shpat_... string."
+        ),
+    ]
 
     // MARK: Credential fields
 
