@@ -25,6 +25,18 @@ final class NangoClient: NSObject {
         return token.isEmpty ? nil : "Bearer \(token)"
     }
 
+    /// All our authenticated endpoints require an X-Hardware-Id alongside
+    /// the Bearer token (same activation token format as the proxy). Wrap
+    /// URLRequest construction so every call sends both.
+    private func authorizedRequest(url: URL, method: String = "GET") -> URLRequest? {
+        guard let auth = authHeader() else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.setValue(auth, forHTTPHeaderField: "Authorization")
+        req.setValue(LicenseManager.hardwareUUID(), forHTTPHeaderField: "X-Hardware-Id")
+        return req
+    }
+
     private static let baseURL = URL(string: "https://talkischeap.app/api")!
     private func baseURL() -> URL { Self.baseURL }
 
@@ -110,10 +122,10 @@ final class NangoClient: NSObject {
     // MARK: - Server calls
 
     private func createSession(integrationKey: String) async throws -> SessionResponse {
-        guard let auth = authHeader() else { throw NangoError.notLicensed }
-        var req = URLRequest(url: baseURL().appendingPathComponent("nango/session"))
-        req.httpMethod = "POST"
-        req.setValue(auth, forHTTPHeaderField: "Authorization")
+        guard var req = authorizedRequest(
+            url: baseURL().appendingPathComponent("nango/session"),
+            method: "POST"
+        ) else { throw NangoError.notLicensed }
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: ["integrationKey": integrationKey])
         req.timeoutInterval = 15
@@ -133,13 +145,13 @@ final class NangoClient: NSObject {
     }
 
     func listConnections(integrationKey: String? = nil) async throws -> [Connection] {
-        guard let auth = authHeader() else { throw NangoError.notLicensed }
         var comps = URLComponents(url: baseURL().appendingPathComponent("nango/connection"), resolvingAgainstBaseURL: false)!
         if let key = integrationKey {
             comps.queryItems = [URLQueryItem(name: "integrationKey", value: key)]
         }
-        var req = URLRequest(url: comps.url!)
-        req.setValue(auth, forHTTPHeaderField: "Authorization")
+        guard var req = authorizedRequest(url: comps.url!) else {
+            throw NangoError.notLicensed
+        }
         req.timeoutInterval = 10
 
         let (data, resp) = try await URLSession.shared.data(for: req)
@@ -152,10 +164,10 @@ final class NangoClient: NSObject {
     }
 
     func disconnect(integrationKey: String, connectionId: String) async throws {
-        guard let auth = authHeader() else { throw NangoError.notLicensed }
-        var req = URLRequest(url: baseURL().appendingPathComponent("nango/connection"))
-        req.httpMethod = "DELETE"
-        req.setValue(auth, forHTTPHeaderField: "Authorization")
+        guard var req = authorizedRequest(
+            url: baseURL().appendingPathComponent("nango/connection"),
+            method: "DELETE"
+        ) else { throw NangoError.notLicensed }
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: [
             "integrationKey": integrationKey,
@@ -183,10 +195,11 @@ final class NangoClient: NSObject {
         method: String = "GET",
         body: Any? = nil
     ) async throws -> Data {
-        guard let auth = authHeader() else { throw NangoError.notLicensed }
-        var req = URLRequest(url: baseURL().appendingPathComponent("nango/proxy"))
-        req.httpMethod = method.uppercased() == "GET" ? "GET" : "POST"
-        req.setValue(auth, forHTTPHeaderField: "Authorization")
+        let httpMethod = method.uppercased() == "GET" ? "GET" : "POST"
+        guard var req = authorizedRequest(
+            url: baseURL().appendingPathComponent("nango/proxy"),
+            method: httpMethod
+        ) else { throw NangoError.notLicensed }
         req.setValue(integrationKey, forHTTPHeaderField: "X-Nango-Integration")
         req.setValue(connectionId, forHTTPHeaderField: "X-Nango-Connection-Id")
         req.setValue(path, forHTTPHeaderField: "X-Nango-Path")
@@ -203,6 +216,35 @@ final class NangoClient: NSObject {
             throw NangoError.apiError(http.statusCode, msg.prefix(300).description)
         }
         return data
+    }
+
+    // MARK: - Integrations catalog (dynamic)
+
+    struct CatalogEntry: Decodable, Hashable {
+        let uniqueKey: String
+        let provider: String
+        let displayName: String
+        let logo: String?
+        let category: String?
+        let connected: Bool
+        let connectionId: String?
+    }
+
+    /// Lists every integration configured in the Nango project, annotated
+    /// with whether *this licensee* is already connected. One call replaces
+    /// our hard-coded connector list so adding a service in the Nango
+    /// dashboard instantly shows up in the app.
+    func catalog() async throws -> [CatalogEntry] {
+        guard let req = authorizedRequest(url: baseURL().appendingPathComponent("nango/catalog")) else {
+            throw NangoError.notLicensed
+        }
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+            let msg = String(data: data, encoding: .utf8) ?? ""
+            throw NangoError.apiError(http.statusCode, msg.prefix(300).description)
+        }
+        struct Wrapper: Decodable { let integrations: [CatalogEntry] }
+        return try JSONDecoder().decode(Wrapper.self, from: data).integrations
     }
 }
 
