@@ -245,10 +245,17 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderedProminent).controlSize(.small)
                 }
+                Toggle("Toggle mode (press once to start, again to stop)", isOn: $settings.toggleRecordingMode)
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Dictation").font(.caption.bold())
-                    Label("**Hold** your hotkey → record → release → paste", systemImage: "hand.tap")
-                    Label("**Hold** hotkey **+ Shift** → hands-free dictation", systemImage: "hand.tap.fill")
+                    if settings.toggleRecordingMode {
+                        Label("**Press** your hotkey → start recording", systemImage: "hand.tap")
+                        Label("**Press again** → stop and paste", systemImage: "hand.tap.fill")
+                    } else {
+                        Label("**Hold** your hotkey → record → release → paste", systemImage: "hand.tap")
+                        Label("**Hold** hotkey **+ Shift** → hands-free dictation", systemImage: "hand.tap.fill")
+                    }
 
                     Divider().padding(.vertical, 4)
 

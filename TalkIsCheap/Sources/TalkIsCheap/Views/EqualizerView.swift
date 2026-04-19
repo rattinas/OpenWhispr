@@ -196,6 +196,7 @@ final class EqualizerOverlay: ObservableObject {
     @AppStorage("equalizerEnabled") var isEnabled = true
 
     private var panel: EqualizerPanel?
+    private var resizeMonitor: Any?
 
     func show() {
         guard isEnabled else { return }
@@ -213,11 +214,44 @@ final class EqualizerOverlay: ObservableObject {
         panel?.resize(for: scale)
         panel?.orderFrontRegardless()
         isVisible = true
+        startResizeMonitor()
     }
 
     func hide() {
         panel?.orderOut(nil)
         isVisible = false
+        stopResizeMonitor()
+    }
+
+    // MARK: +/- keyboard shortcuts for cassette resize
+
+    private func startResizeMonitor() {
+        guard resizeMonitor == nil else { return }
+        resizeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return }
+            // Option+= to grow, Option+- to shrink (avoids conflicts with text input)
+            guard event.modifierFlags.contains(.option),
+                  !event.modifierFlags.contains(.command),
+                  !event.modifierFlags.contains(.control) else { return }
+            let ch = event.charactersIgnoringModifiers ?? ""
+            if ch == "=" || ch == "+" {
+                DispatchQueue.main.async { self.adjustScale(by: +0.1) }
+            } else if ch == "-" {
+                DispatchQueue.main.async { self.adjustScale(by: -0.1) }
+            }
+        }
+    }
+
+    private func stopResizeMonitor() {
+        if let m = resizeMonitor { NSEvent.removeMonitor(m) }
+        resizeMonitor = nil
+    }
+
+    private func adjustScale(by delta: Double) {
+        let current = AppSettings.shared.cassetteScale
+        let next = min(2.5, max(0.5, (round((current + delta) * 10) / 10)))
+        AppSettings.shared.cassetteScale = next
+        panel?.resize(for: next)
     }
 }
 

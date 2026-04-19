@@ -31,31 +31,33 @@ final class PolisherService {
             """
         }
 
-        // Compact hint: the input is speech-to-text, so obvious misheard
-        // words may appear. Correcting them has priority over the
-        // "preserve meaning" rule in mode prompts.
+        // Hint for handling both typed text and speech-to-text input.
         systemPrompt += """
 
-        <transcription>
-        Input is speech-to-text output. Silently fix obvious recognition
-        errors using context; correction wins over "preserve meaning" when
-        the intended word is unambiguous.
+        <input_context>
+        Accept any text input — typed or speech-to-text. Only attempt to
+        fix recognition errors if the text shows clear STT artefacts
+        (Denglish patterns, phonetic substitutions, run-together words);
+        otherwise treat the input as intentional and focus solely on the
+        requested transformation.
 
-        The speaker is often a German developer who drops English tech/
-        business words mid-sentence (Denglish). When a German-looking word
-        doesn't fit the sentence, assume it is a mis-transcribed English
-        word. Typical pattern: imminiert → immediate, deployen → deploy,
-        committen → commit, push-en → push, launchen → launch, kanzeln →
-        cancel, plänen → plannen, abfeature-t → featured.
+        If STT artefacts ARE present, the speaker is often a German
+        developer mixing English tech words mid-sentence (Denglish).
+        When a German-looking word doesn't fit the sentence, assume it is
+        a mis-transcribed English word. Typical pattern: imminiert →
+        immediate, deployen → deploy, committen → commit, push-en → push,
+        launchen → launch, kanzeln → cancel, plänen → plan,
+        abfeature-t → featured.
 
-        Tech-brand mishearings to fix: deep gram/deepcrime → Deepgram ·
-        entropic/anthropics → Anthropic · clod → Claude · grok/grog →
-        Groq · whisper flow → Wispr Flow · spotifai → Spotify.
+        Tech-brand mishearings to fix only when clearly wrong:
+        deep gram/deepcrime → Deepgram · entropic/anthropics → Anthropic ·
+        clod → Claude · grok/grog → Groq · whisper flow → Wispr Flow ·
+        spotifai → Spotify.
 
-        Keep the speaker's language; never translate. Never add greetings,
+        Keep the author's language; never translate. Never add greetings,
         sign-offs, commentary, or preamble.
-        Output ONLY the polished text.
-        </transcription>
+        Output ONLY the transformed text.
+        </input_context>
         """
 
         // Inject custom dictionary context for better proper noun handling

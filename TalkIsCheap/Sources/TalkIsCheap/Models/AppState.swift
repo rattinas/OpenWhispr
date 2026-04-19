@@ -270,6 +270,7 @@ final class AppState: ObservableObject {
         StreamingTranscriber.shared.cancel()
         _ = recorder.stop()
         AudioDimmer.shared.restore()
+        HotkeyManager.shared.resetToggleState()
         status = .ready
         EqualizerOverlay.shared.hide()
     }
@@ -459,6 +460,9 @@ final class AppState: ObservableObject {
 
     // MARK: - Voice Search (Ctrl+Cmd)
 
+    /// Whether the current search recording is also streaming via Deepgram.
+    private var searchStreamingActive = false
+
     func startSearchRecording() {
         if settings.shouldShowPaywall {
             NotificationCenter.default.post(name: .showPaywall, object: nil)
@@ -472,8 +476,16 @@ final class AppState: ObservableObject {
         }
 
         Log.write("startSearchRecording")
+        searchStreamingActive = false
 
         // HOT PATH: start the recorder FIRST so no first-word audio is lost.
+        // Also feed audio to StreamingTranscriber so the query is ready the
+        // moment the user releases (no separate Groq call needed).
+        recorder.onNativeBuffer = { [weak self] buffer in
+            if self?.searchStreamingActive == true {
+                StreamingTranscriber.shared.feed(buffer: buffer)
+            }
+        }
         recorder.start()
         status = .recording
 
@@ -483,9 +495,24 @@ final class AppState: ObservableObject {
         SearchPanelManager.shared.state = .listening
         SearchPanelManager.shared.show()
 
-        // AudioDimmer can take ~200 ms on Bluetooth outputs — off the hot path.
         Task.detached(priority: .utility) { @MainActor in
             AudioDimmer.shared.dim()
+        }
+
+        // Mint Deepgram token and start streaming in parallel — search
+        // recording benefits from the same low-latency path as fast mode.
+        if settings.shouldUseProxy {
+            Task { @MainActor in
+                do {
+                    let token = try await ProxyClient.mintDeepgramToken()
+                    let lang: String? = settings.language == "auto" ? nil : settings.language
+                    StreamingTranscriber.shared.start(apiKey: token, language: lang)
+                    self.searchStreamingActive = true
+                    Log.write("Search: Deepgram streaming started")
+                } catch {
+                    Log.write("Search: Deepgram token mint failed (\(error)) — will use Groq fallback")
+                }
+            }
         }
     }
 
@@ -494,20 +521,40 @@ final class AppState: ObservableObject {
         AudioDimmer.shared.restore()
         SoundFeedback.recordStop()
         let wavData = recorder.stop()
+        let streamingActive = searchStreamingActive
+        searchStreamingActive = false
         status = .transcribing
         EqualizerOverlay.shared.hide()
-        SearchPanelManager.shared.state = .searching(query: "Processing...")
+        SearchPanelManager.shared.state = .searching(query: "Processing…")
 
-        Task { await performSearch(wavData: wavData) }
+        Task { await performSearch(wavData: wavData, streamingActive: streamingActive) }
     }
 
-    private func performSearch(wavData: Data) async {
+    private func performSearch(wavData: Data, streamingActive: Bool = false) async {
         do {
-            // 1. Transcribe
-            let query = try await TranscriberService.shared.transcribe(
-                wavData: wavData,
-                language: settings.language == "auto" ? nil : settings.language
-            )
+            // 1. Transcribe — use Deepgram streaming result when available
+            //    (avoids a Groq round-trip and saves ~500 ms).
+            let query: String
+            if streamingActive {
+                let streamed = await StreamingTranscriber.shared.finishAndCollect()
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !streamed.isEmpty {
+                    query = streamed
+                    Log.write("Search: using streaming transcript (\(streamed.count) chars)")
+                } else {
+                    Log.write("Search: streaming empty — falling back to Groq")
+                    query = try await TranscriberService.shared.transcribe(
+                        wavData: wavData,
+                        language: settings.language == "auto" ? nil : settings.language
+                    )
+                }
+            } else {
+                query = try await TranscriberService.shared.transcribe(
+                    wavData: wavData,
+                    language: settings.language == "auto" ? nil : settings.language
+                )
+            }
+
             Log.write("Search query: \(query)")
 
             guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -516,13 +563,30 @@ final class AppState: ObservableObject {
                 return
             }
 
-            // 2. Search + Summarize
-            SearchPanelManager.shared.state = .searching(query: query)
-            let result = try await SearchService.shared.search(query: query)
+            // 2. Search + Summarize — use streaming for proxy users
+            if settings.shouldUseProxy {
+                let language = settings.language == "auto" ? nil : settings.language
+                SearchPanelManager.shared.startStreaming(query: query)
+                SearchPanelManager.shared.show()
 
-            // 3. Show result
+                for try await event in ProxyClient.searchStreaming(query: query, language: language) {
+                    switch event {
+                    case .sources(let sources, let images, let widgetUrl):
+                        let searchSources = sources.map { SearchSource(title: $0.title, url: $0.url, thumbnail: nil) }
+                        SearchPanelManager.shared.updateStreamingSources(sources: searchSources, images: images, widgetUrl: widgetUrl)
+                    case .delta(let text):
+                        SearchPanelManager.shared.appendStreamingDelta(text)
+                    case .done:
+                        SearchPanelManager.shared.finalizeStreaming()
+                    }
+                }
+            } else {
+                SearchPanelManager.shared.state = .searching(query: query)
+                let result = try await SearchService.shared.search(query: query)
+                SearchPanelManager.shared.showResult(result)
+            }
+
             SoundFeedback.done()
-            SearchPanelManager.shared.showResult(result)
             status = .ready
 
         } catch {
