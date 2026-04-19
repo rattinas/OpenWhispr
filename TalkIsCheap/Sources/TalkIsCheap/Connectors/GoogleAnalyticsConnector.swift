@@ -25,6 +25,46 @@ final class GoogleAnalyticsConnector: Connector {
     ]
 
     let serviceNames: [String] = ["google analytics", "analytics", "ga4"]
+    let category: ConnectorCategory = .marketing
+
+    let setupGuide: [SetupStep] = [
+        SetupStep(
+            "1. Find your GA4 Property ID",
+            detail: "Open your GA4 property → Admin (gear icon, bottom left) → Property settings → copy the Property ID (a number like 123456789). This is NOT the same as the \"G-XXXXX\" measurement ID.",
+            actionLabel: "Open Google Analytics",
+            actionURL: "https://analytics.google.com/analytics/web/"
+        ),
+        SetupStep(
+            "2. Create a Google Cloud project (skip if you have one)",
+            detail: "Any project works. The service account you'll create lives inside it. Naming suggestion: \"TalkIsCheap\".",
+            actionLabel: "Open Google Cloud Console",
+            actionURL: "https://console.cloud.google.com/projectcreate"
+        ),
+        SetupStep(
+            "3. Enable the Analytics Data API",
+            detail: "In the Cloud project, the Data API must be enabled before calls succeed.",
+            actionLabel: "Enable Analytics Data API",
+            actionURL: "https://console.cloud.google.com/apis/library/analyticsdata.googleapis.com"
+        ),
+        SetupStep(
+            "4. Create a Service Account",
+            detail: "IAM & Admin → Service Accounts → 'Create service account'. Name: \"TalkIsCheap GA4 Reader\". Skip the optional \"Grant access to this project\" step — GA4 access is granted separately.",
+            actionLabel: "Open Service Accounts",
+            actionURL: "https://console.cloud.google.com/iam-admin/serviceaccounts"
+        ),
+        SetupStep(
+            "5. Generate a JSON key",
+            detail: "Click the new service account → Keys tab → 'Add key' → Create new key → JSON → Create. A .json file downloads. Copy the ENTIRE file contents to paste below."
+        ),
+        SetupStep(
+            "6. Grant the service account access to your GA4 property",
+            detail: "Back in Google Analytics: Admin → Property access management → '+' → add the service account email (looks like name@project.iam.gserviceaccount.com) with the 'Viewer' role."
+        ),
+        SetupStep(
+            "7. Paste Property ID + full service account JSON below",
+            detail: "Both values stay in your Mac's Keychain — they never leave your device except for direct API calls to Google."
+        ),
+    ]
 
     // MARK: Credential fields
 

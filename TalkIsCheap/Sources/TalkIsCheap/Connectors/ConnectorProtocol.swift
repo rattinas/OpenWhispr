@@ -98,6 +98,70 @@ struct ConnectorResult {
     let cachedAt: Date
 }
 
+// MARK: - Category (Modes)
+
+enum ConnectorCategory: String, CaseIterable {
+    case ecommerce    // Shopify, Stripe, WooCommerce, …
+    case marketing    // Google Ads, Meta Ads, TikTok Ads, GA4, …
+    case dev          // GitHub, GitLab, Vercel, Sentry, …
+    case recruiting   // LinkedIn, Indeed, Greenhouse, …
+    case productivity // Notion, Linear, Asana, …
+
+    var label: String {
+        switch self {
+        case .ecommerce: return "E-Commerce"
+        case .marketing: return "Marketing & Analytics"
+        case .dev: return "Development"
+        case .recruiting: return "Recruiting"
+        case .productivity: return "Productivity"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .ecommerce: return "cart.fill"
+        case .marketing: return "chart.line.uptrend.xyaxis"
+        case .dev: return "hammer.fill"
+        case .recruiting: return "person.3.fill"
+        case .productivity: return "list.bullet.rectangle"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .ecommerce: return "Sales, orders, revenue"
+        case .marketing: return "Ad spend, sessions, conversions"
+        case .dev: return "Repos, issues, deployments"
+        case .recruiting: return "Candidates, applications"
+        case .productivity: return "Tasks, pages, projects"
+        }
+    }
+}
+
+// MARK: - Setup Guide (tutorial)
+
+/// One step in a connector's setup tutorial. Rendered in the connect
+/// sheet so the user isn't left hunting through third-party docs.
+struct SetupStep {
+    let title: String
+    let detail: String?        // explanatory paragraph under the title
+    let actionLabel: String?   // e.g. "Open Stripe Dashboard"
+    let actionURL: URL?        // clicked → NSWorkspace.shared.open(url)
+    let copyable: String?      // sample / required text shown in a copy-to-clipboard box
+
+    init(_ title: String,
+         detail: String? = nil,
+         actionLabel: String? = nil,
+         actionURL: String? = nil,
+         copyable: String? = nil) {
+        self.title = title
+        self.detail = detail
+        self.actionLabel = actionLabel
+        self.actionURL = actionURL.flatMap { URL(string: $0) }
+        self.copyable = copyable
+    }
+}
+
 // MARK: - Connector Protocol
 
 protocol Connector: AnyObject {
@@ -107,6 +171,12 @@ protocol Connector: AnyObject {
     var accentColorHex: String { get }
     var keywords: [String] { get }        // trigger words (lowercase)
     var serviceNames: [String] { get }    // how users say this service (lowercase)
+
+    /// Which Mode bucket this connector belongs to for UI grouping.
+    var category: ConnectorCategory { get }
+
+    /// Structured tutorial shown in the connect sheet with clickable links.
+    var setupGuide: [SetupStep] { get }
 
     var isConnected: Bool { get }
 

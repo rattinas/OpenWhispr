@@ -22,9 +22,41 @@ final class StripeConnector: Connector {
     ]
 
     let serviceNames: [String] = ["stripe"]
+    let category: ConnectorCategory = .ecommerce
+
+    let setupGuide: [SetupStep] = [
+        SetupStep(
+            "1. Open your Stripe API Keys",
+            detail: "Use the LIVE link for real revenue data, TEST for sandbox. You need to be logged into your Stripe account.",
+            actionLabel: "Open Stripe API Keys (live)",
+            actionURL: "https://dashboard.stripe.com/apikeys"
+        ),
+        SetupStep(
+            "Or — test mode",
+            actionLabel: "Open Stripe API Keys (test)",
+            actionURL: "https://dashboard.stripe.com/test/apikeys"
+        ),
+        SetupStep(
+            "2. Create restricted key",
+            detail: "Click 'Create restricted key'. DON'T use the full Secret Key — restricted keys are scoped to just what TalkIsCheap needs and can be revoked independently."
+        ),
+        SetupStep(
+            "3. Set these permissions to Read",
+            detail: "Leave everything else on 'None' so the key can't modify anything:",
+            copyable: "Balance: Read\nCharges: Read\nPayouts: Read\nCustomers: Read\nBalance Transactions: Read"
+        ),
+        SetupStep(
+            "4. Name + verify + create",
+            detail: "Name it \"TalkIsCheap Read-only\". Stripe sends a code to your email / 2FA to confirm."
+        ),
+        SetupStep(
+            "5. Copy key once",
+            detail: "Stripe only reveals the key on creation. If you lose it, just make another one. It starts with rk_live_ or rk_test_."
+        ),
+    ]
 
     let credentialFields: [(key: String, label: String, isSecret: Bool)] = [
-        (key: "secretKey", label: "Secret Key (sk_live_... or sk_test_...)", isSecret: true)
+        (key: "secretKey", label: "Restricted Key (rk_live_... or rk_test_...)", isSecret: true)
     ]
 
     // MARK: - Stored Credentials
