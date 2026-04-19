@@ -72,6 +72,10 @@ final class AppSettings: ObservableObject {
     //   defaults write com.talkischeap.app commandsUnlocked -bool true
     @AppStorage("commandsUnlocked") var commandsUnlocked: Bool = false
 
+    /// Industry pack ID the user picked — drives which services are
+    /// shown first in Settings → Services. Empty = show all evenly.
+    @AppStorage("industryPack") var industryPack: String = ""
+
     static let languages: [(code: String, name: String)] = [
         ("auto", "Auto-Detect"),
         ("de", "Deutsch"),

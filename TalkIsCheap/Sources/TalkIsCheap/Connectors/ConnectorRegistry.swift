@@ -12,6 +12,7 @@ final class ConnectorRegistry: ObservableObject {
         GoogleAnalyticsConnector.shared,
         GoogleAdsConnector.shared,
         MetaAdsConnector.shared,
+        GmailConnector.shared,
     ]
 
     /// Connectors grouped by category for the settings UI.

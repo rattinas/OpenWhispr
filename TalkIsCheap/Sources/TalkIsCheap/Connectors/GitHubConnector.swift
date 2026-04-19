@@ -31,6 +31,7 @@ final class GitHubConnector: Connector {
     // calls through /api/nango/proxy. Pasted-token flow still works as
     // a fallback.
     let nangoIntegrationKey: String? = "github-getting-started"
+    let nangoProvider: String? = "github"
 
     let setupGuide: [SetupStep] = [
         SetupStep(
@@ -81,7 +82,9 @@ final class GitHubConnector: Connector {
 
     // MARK: isConnected
 
+    @MainActor
     var isConnected: Bool {
+        if isNangoConnected { return true }
         if let id = nangoConnectionId, !id.isEmpty { return true }
         if let t = token, !t.isEmpty { return true }
         return false
@@ -120,6 +123,7 @@ final class GitHubConnector: Connector {
 
     // MARK: query
 
+    @MainActor
     func query(intent: ConnectorIntent) async throws -> ConnectorResult {
         guard isConnected else { throw ConnectorError.notConnected(name) }
 
@@ -269,9 +273,14 @@ final class GitHubConnector: Connector {
 
     // MARK: Private helpers
 
-    /// Routes a GitHub path either through Nango (when OAuth'd) or
-    /// directly to api.github.com (when the user pasted a PAT).
+    /// Routes a GitHub path through Nango when a live connection exists
+    /// (preferred, zero-touch auth), else uses the pasted PAT as fallback.
+    @MainActor
     private func githubGet(path: String) async throws -> Data {
+        if isNangoConnected {
+            return try await nangoProxy(path: path)
+        }
+        // Legacy paths
         if let connectionId = nangoConnectionId, !connectionId.isEmpty,
            let integrationKey = nangoIntegrationKey {
             return try await NangoClient.shared.proxy(

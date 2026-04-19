@@ -24,6 +24,7 @@ final class ShopifyConnector: Connector {
 
     let serviceNames: [String] = ["shopify"]
     let category: ConnectorCategory = .ecommerce
+    let nangoProvider: String? = "shopify"
 
     let setupGuide: [SetupStep] = [
         SetupStep(
@@ -69,7 +70,9 @@ final class ShopifyConnector: Connector {
 
     // MARK: isConnected
 
+    @MainActor
     var isConnected: Bool {
+        if isNangoConnected { return true }
         guard let domain = shopDomain, let token = accessToken else { return false }
         return !domain.isEmpty && !token.isEmpty
     }
@@ -97,22 +100,26 @@ final class ShopifyConnector: Connector {
 
     // MARK: query
 
+    @MainActor
     func query(intent: ConnectorIntent) async throws -> ConnectorResult {
-        guard isConnected, let domain = shopDomain else {
-            throw ConnectorError.notConnected(name)
-        }
-
         let startISO = isoString(from: intent.timeRange.startDate)
         let endISO   = isoString(from: intent.timeRange.endDate)
-
-        let urlString = "https://\(domain)/admin/api/2024-01/orders.json"
+        let path = "/admin/api/2024-01/orders.json"
             + "?created_at_min=\(startISO)"
             + "&created_at_max=\(endISO)"
             + "&status=any"
             + "&limit=250"
             + "&fields=id,total_price,financial_status,currency,created_at,line_items"
 
-        let data = try await apiGet(url: urlString)
+        let data: Data
+        if isNangoConnected {
+            data = try await nangoProxy(path: path)
+        } else {
+            guard let domain = shopDomain, !domain.isEmpty else {
+                throw ConnectorError.notConnected(name)
+            }
+            data = try await apiGet(url: "https://\(domain)\(path)")
+        }
 
         // MARK: Parse
 
