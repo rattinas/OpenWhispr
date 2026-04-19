@@ -2,81 +2,114 @@ import SwiftUI
 import AppKit
 
 struct ConnectedServicesView: View {
-    @ObservedObject private var registry = ConnectorRegistry.shared
-    @State private var connectingTo: ConnectorWrapper?
-    @State private var connectError: String?
-    @State private var isConnecting = false
+    @ObservedObject private var catalog = NangoCatalog.shared
+    @State private var connectingTo: NangoClient.CatalogEntry?
+    @State private var oauthError: String?
     @State private var isOAuthing = false
-    @State private var credentials: [String: String] = [:]
-    @State private var guideExpanded = false
-    @State private var showAdvanced = false
+    @State private var search = ""
 
     var body: some View {
         Form {
             Section {
-                Text("Connect your tools. When you use Command Mode (double-tap hotkey), TalkIsCheap detects which service your query is about and answers from live data — no mode switching.")
+                Text("Connect any of your business tools via one-click OAuth. When you use Command Mode (double-tap hotkey), TalkIsCheap detects which service you're asking about and answers from live data.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
 
-            // Grouped by category (Mode)
-            ForEach(registry.connectorsByCategory(), id: \.0) { cat, connectors in
-                Section {
-                    ForEach(connectors, id: \.id) { connector in
-                        connectorRow(connector)
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Filter services…", text: $search)
+                        .textFieldStyle(.plain)
+                    if catalog.isLoading {
+                        ProgressView().scaleEffect(0.6)
+                    } else {
+                        Button {
+                            Task { await catalog.refresh() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Refresh list from Nango")
                     }
-                } header: {
-                    HStack(spacing: 6) {
-                        Image(systemName: cat.icon)
-                        Text(cat.label)
-                    }
-                } footer: {
-                    Text(cat.subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(6)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                if let err = catalog.loadError {
+                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .font(.caption)
                 }
             }
 
-            if !registry.connectedConnectors.isEmpty {
+            if catalog.entries.isEmpty && !catalog.isLoading {
                 Section {
-                    Button {
-                        registry.clearCache()
-                    } label: {
-                        Label("Clear Data Cache", systemImage: "arrow.triangle.2.circlepath")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("No integrations configured yet.")
+                            .font(.system(size: 13, weight: .medium))
+                        Text("Add integrations in your Nango dashboard at app.nango.dev — they'll show up here automatically.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Link("Open Nango Dashboard", destination: URL(string: "https://app.nango.dev")!)
+                            .font(.caption)
                     }
-                } footer: {
-                    Text("Query results are cached for 15 minutes. Clear if you need fresh data right now.")
-                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                ForEach(filteredGroups(), id: \.0) { cat, list in
+                    Section {
+                        ForEach(list, id: \.uniqueKey) { entry in
+                            row(entry)
+                        }
+                    } header: {
+                        HStack(spacing: 6) {
+                            Image(systemName: NangoCategoryDisplay.icon(cat))
+                            Text(NangoCategoryDisplay.label(cat))
+                        }
+                    }
                 }
             }
         }
         .formStyle(.grouped)
-        .sheet(item: $connectingTo) { wrapper in
-            connectSheet(connector: wrapper.connector)
+        .task { if catalog.entries.isEmpty { await catalog.refresh() } }
+        .sheet(item: Binding(
+            get: { connectingTo.map { EntryWrapper(entry: $0) } },
+            set: { connectingTo = $0?.entry }
+        )) { wrapper in
+            connectSheet(entry: wrapper.entry)
         }
     }
 
-    // MARK: - Connector Row
+    // MARK: - Rows
+
+    private func filteredGroups() -> [(String, [NangoClient.CatalogEntry])] {
+        let groups = catalog.grouped()
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return groups }
+        return groups.compactMap { cat, list in
+            let filtered = list.filter {
+                $0.displayName.lowercased().contains(needle)
+                    || $0.provider.lowercased().contains(needle)
+                    || $0.uniqueKey.lowercased().contains(needle)
+            }
+            return filtered.isEmpty ? nil : (cat, filtered)
+        }
+    }
 
     @ViewBuilder
-    private func connectorRow(_ connector: any Connector) -> some View {
+    private func row(_ entry: NangoClient.CatalogEntry) -> some View {
         HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(hex: connector.accentColorHex).opacity(0.15))
-                    .frame(width: 36, height: 36)
-                Image(systemName: connector.icon)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(Color(hex: connector.accentColorHex))
-            }
+            integrationIcon(entry)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(connector.name)
+                Text(entry.displayName)
                     .font(.system(size: 13, weight: .medium))
-                if connector.isConnected {
+                if entry.connected {
                     Label("Connected", systemImage: "checkmark.circle.fill")
                         .font(.caption)
                         .foregroundStyle(.green)
                 } else {
-                    Text("Not connected")
+                    Text(entry.provider)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -84,9 +117,9 @@ struct ConnectedServicesView: View {
 
             Spacer()
 
-            if connector.isConnected {
+            if entry.connected {
                 Button(role: .destructive) {
-                    registry.disconnect(connector: connector)
+                    Task { await disconnect(entry) }
                 } label: {
                     Text("Disconnect")
                         .font(.system(size: 12))
@@ -95,10 +128,8 @@ struct ConnectedServicesView: View {
                 .controlSize(.small)
             } else {
                 Button {
-                    credentials = [:]
-                    connectError = nil
-                    guideExpanded = true
-                    connectingTo = ConnectorWrapper(connector: connector)
+                    oauthError = nil
+                    connectingTo = entry
                 } label: {
                     Text("Connect")
                         .font(.system(size: 12))
@@ -110,24 +141,40 @@ struct ConnectedServicesView: View {
         .padding(.vertical, 2)
     }
 
-    // MARK: - Connect Sheet
-
-    private func connectSheet(connector: any Connector) -> some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color(hex: connector.accentColorHex).opacity(0.15))
-                        .frame(width: 44, height: 44)
-                    Image(systemName: connector.icon)
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(Color(hex: connector.accentColorHex))
+    @ViewBuilder
+    private func integrationIcon(_ entry: NangoClient.CatalogEntry) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.12))
+                .frame(width: 36, height: 36)
+            if let logo = entry.logo, let url = URL(string: logo) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img):
+                        img.resizable().aspectRatio(contentMode: .fit).padding(6)
+                    default:
+                        Image(systemName: "square.grid.2x2")
+                            .foregroundStyle(.secondary)
+                    }
                 }
+            } else {
+                Image(systemName: "square.grid.2x2")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 36, height: 36)
+    }
+
+    // MARK: - Connect sheet
+
+    private func connectSheet(entry: NangoClient.CatalogEntry) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                integrationIcon(entry)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Connect \(connector.name)")
+                    Text("Connect \(entry.displayName)")
                         .font(.headline)
-                    Text("Credentials stored in your Mac's Keychain — never sent to our servers.")
+                    Text("You authorise TalkIsCheap to read your data through your \(entry.provider) account. Nothing is stored on our side other than the Nango connection ID.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -137,341 +184,87 @@ struct ConnectedServicesView: View {
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // ── Primary path: Managed OAuth via Nango ─────────────
-                    if connector.nangoIntegrationKey != nil {
-                        nangoOAuthSection(connector)
-                    }
+            VStack(alignment: .leading, spacing: 14) {
+                Text("A browser window will open so you can sign in to \(entry.provider). After you approve access, come back here — TalkIsCheap will detect the new connection automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                    // ── Advanced / fallback: paste credentials manually ──
-                    if connector.nangoIntegrationKey != nil {
-                        DisclosureGroup(isExpanded: $showAdvanced) {
-                            pasteCredentialsBlock(connector)
-                                .padding(.top, 10)
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "wrench.adjustable")
-                                    .font(.system(size: 11))
-                                Text("Advanced: connect with manual credentials")
-                                    .font(.system(size: 12, weight: .semibold))
-                                Spacer()
-                            }
-                            .foregroundStyle(.secondary)
-                        }
-                        .padding(14)
-                        .background(Color.secondary.opacity(0.04))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    } else {
-                        // No Nango integration for this connector — paste is the only path.
-                        pasteCredentialsBlock(connector)
-                    }
-
-                    if let error = connectError {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
-                            .background(Color.red.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
+                if let err = oauthError {
+                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(Color.red.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-                .padding(24)
             }
+            .padding(24)
+
+            Spacer()
 
             Divider()
 
             HStack {
                 Button("Cancel") {
                     connectingTo = nil
-                    connectError = nil
+                    oauthError = nil
                 }
                 .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
-                // Paste-credentials button is only shown when the advanced
-                // section is open (or when Nango isn't available at all).
-                let showPasteButton = connector.nangoIntegrationKey == nil || showAdvanced
-                if showPasteButton {
-                    Button {
-                        guard let wrapper = connectingTo else { return }
-                        performConnect(connector: wrapper.connector)
-                    } label: {
-                        HStack(spacing: 6) {
-                            if isConnecting { ProgressView().scaleEffect(0.6) }
-                            Text(isConnecting ? "Testing…" : "Connect with credentials")
-                        }
+                Button {
+                    Task { await startOAuth(entry: entry) }
+                } label: {
+                    HStack(spacing: 8) {
+                        if isOAuthing { ProgressView().scaleEffect(0.6) }
+                        Image(systemName: isOAuthing ? "" : "bolt.horizontal.circle.fill")
+                            .opacity(isOAuthing ? 0 : 1)
+                        Text(isOAuthing ? "Waiting for authorisation…" : "Open browser to authorise")
+                            .font(.system(size: 13, weight: .semibold))
                     }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isConnecting || isOAuthing || !hasRequiredFields(connector))
                 }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(isOAuthing)
             }
             .padding(20)
         }
-        .frame(width: 520, height: 640)
+        .frame(width: 520, height: 440)
     }
 
-    @ViewBuilder
-    private func nangoOAuthSection(_ connector: any Connector) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "bolt.horizontal.circle.fill")
-                    .foregroundStyle(Color(hex: connector.accentColorHex))
-                Text("Connect with one click")
-                    .font(.system(size: 14, weight: .semibold))
-            }
-            Text("Opens the \(connector.name) login page. You authorise TalkIsCheap to read your data through **Nango** — no tokens to copy.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+    // MARK: - Actions
 
-            Button {
-                guard let wrapper = connectingTo else { return }
-                performOAuth(connector: wrapper.connector)
-            } label: {
-                HStack(spacing: 8) {
-                    if isOAuthing { ProgressView().scaleEffect(0.6) }
-                    Image(systemName: isOAuthing ? "" : connector.icon)
-                        .opacity(isOAuthing ? 0 : 1)
-                    Text(isOAuthing ? "Waiting for authorisation…" : "Connect \(connector.name)")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Color(hex: connector.accentColorHex))
-            .disabled(isOAuthing || isConnecting)
-        }
-        .padding(16)
-        .background(Color(hex: connector.accentColorHex).opacity(0.06))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color(hex: connector.accentColorHex).opacity(0.3), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    @ViewBuilder
-    private func pasteCredentialsBlock(_ connector: any Connector) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if !connector.setupGuide.isEmpty {
-                setupGuideSection(connector)
-            }
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Paste your credentials")
-                    .font(.system(size: 13, weight: .semibold))
-                ForEach(connector.credentialFields, id: \.key) { field in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(field.label)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        if field.isSecret {
-                            SecureField(field.key, text: credentialBinding(for: field.key))
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            TextField(field.key, text: credentialBinding(for: field.key))
-                                .textFieldStyle(.roundedBorder)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Setup guide block
-
-    @ViewBuilder
-    private func setupGuideSection(_ connector: any Connector) -> some View {
-        DisclosureGroup(isExpanded: $guideExpanded) {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(Array(connector.setupGuide.enumerated()), id: \.offset) { _, step in
-                    setupStepView(step)
-                }
-            }
-            .padding(.top, 10)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "list.number")
-                    .foregroundStyle(Color(hex: connector.accentColorHex))
-                Text("Setup guide")
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
-            }
-        }
-        .padding(14)
-        .background(Color.secondary.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    @ViewBuilder
-    private func setupStepView(_ step: SetupStep) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(step.title)
-                .font(.system(size: 13, weight: .semibold))
-
-            if let detail = step.detail {
-                Text(detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let url = step.actionURL {
-                Button {
-                    NSWorkspace.shared.open(url)
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.up.right.square")
-                            .font(.system(size: 10))
-                        Text(step.actionLabel ?? url.absoluteString)
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.tint)
-            }
-
-            if let copy = step.copyable {
-                HStack(alignment: .top, spacing: 8) {
-                    Text(copy)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(copy, forType: .string)
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                            .font(.system(size: 10))
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Copy")
-                }
-                .padding(8)
-                .background(Color(NSColor.textBackgroundColor).opacity(0.6))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-        }
-        .padding(.leading, 4)
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(Color(hex: "#cccccc").opacity(0.5))
-                .frame(width: 2)
-                .offset(x: -6)
-        }
-    }
-
-    // MARK: - Helpers
-
-    private func credentialBinding(for key: String) -> Binding<String> {
-        Binding(
-            get: { credentials[key] ?? "" },
-            set: { credentials[key] = $0 }
-        )
-    }
-
-    private func hasRequiredFields(_ connector: any Connector) -> Bool {
-        connector.credentialFields
-            .filter { !$0.label.lowercased().contains("optional") }
-            .allSatisfy { !(credentials[$0.key] ?? "").isEmpty }
-    }
-
-    private func performOAuth(connector: any Connector) {
-        guard let integrationKey = connector.nangoIntegrationKey else { return }
+    private func startOAuth(entry: NangoClient.CatalogEntry) async {
         isOAuthing = true
-        connectError = nil
-        Task {
-            do {
-                let connectionId = try await NangoClient.shared.connect(integrationKey: integrationKey)
-                try registry.connect(
-                    connector: connector,
-                    credentials: ["nangoConnectionId": connectionId]
-                )
-                // Run testConnection to verify the Nango proxy actually works
-                // for this connection — catches cases where the OAuth flow
-                // "completed" but the token doesn't have the needed scopes.
-                do {
-                    try await connector.testConnection()
-                } catch {
-                    try? await NangoClient.shared.disconnect(
-                        integrationKey: integrationKey,
-                        connectionId: connectionId
-                    )
-                    registry.disconnect(connector: connector)
-                    throw error
-                }
-                await MainActor.run {
-                    connectingTo = nil
-                    isOAuthing = false
-                }
-            } catch {
-                await MainActor.run {
-                    connectError = error.localizedDescription
-                    isOAuthing = false
-                }
-            }
+        oauthError = nil
+        do {
+            _ = try await NangoClient.shared.connect(integrationKey: entry.uniqueKey)
+            await catalog.refresh()
+            connectingTo = nil
+        } catch {
+            oauthError = error.localizedDescription
         }
+        isOAuthing = false
     }
 
-    private func performConnect(connector: any Connector) {
-        isConnecting = true
-        connectError = nil
-        Task {
-            do {
-                // 1. Shape-check + Keychain store
-                try registry.connect(connector: connector, credentials: credentials)
-
-                // 2. Live ping so bad credentials surface here, not on the
-                //    user's first voice query. Disconnect again if the test
-                //    fails so we don't leave half-broken state in Keychain.
-                do {
-                    try await connector.testConnection()
-                } catch {
-                    registry.disconnect(connector: connector)
-                    throw error
-                }
-
-                await MainActor.run {
-                    connectingTo = nil
-                    isConnecting = false
-                }
-            } catch {
-                await MainActor.run {
-                    connectError = error.localizedDescription
-                    isConnecting = false
-                }
-            }
+    private func disconnect(_ entry: NangoClient.CatalogEntry) async {
+        guard let connectionId = entry.connectionId else { return }
+        do {
+            try await NangoClient.shared.disconnect(
+                integrationKey: entry.uniqueKey,
+                connectionId: connectionId
+            )
+            await catalog.refresh()
+        } catch {
+            oauthError = error.localizedDescription
         }
     }
 }
 
-// MARK: - Identifiable wrapper for sheet binding
-
-private struct ConnectorWrapper: Identifiable {
-    let connector: any Connector
-    var id: String { connector.id }
+private struct EntryWrapper: Identifiable {
+    let entry: NangoClient.CatalogEntry
+    var id: String { entry.uniqueKey }
 }
-
-// MARK: - Color from hex string
-
-extension Color {
-    init(hex: String) {
-        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        var int: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&int)
-        self.init(
-            red: Double((int >> 16) & 0xFF) / 255,
-            green: Double((int >> 8) & 0xFF) / 255,
-            blue: Double(int & 0xFF) / 255
-        )
-    }
-}
-
-// MARK: - Hashable conformance for ForEach binding on ConnectorCategory
-
-extension ConnectorCategory: Hashable {}
