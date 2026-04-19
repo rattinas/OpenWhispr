@@ -6,8 +6,10 @@ struct ConnectedServicesView: View {
     @State private var connectingTo: ConnectorWrapper?
     @State private var connectError: String?
     @State private var isConnecting = false
+    @State private var isOAuthing = false
     @State private var credentials: [String: String] = [:]
-    @State private var guideExpanded = true
+    @State private var guideExpanded = false
+    @State private var showAdvanced = false
 
     var body: some View {
         Form {
@@ -137,29 +139,32 @@ struct ConnectedServicesView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Setup guide (collapsible)
-                    if !connector.setupGuide.isEmpty {
-                        setupGuideSection(connector)
+                    // ── Primary path: Managed OAuth via Nango ─────────────
+                    if connector.nangoIntegrationKey != nil {
+                        nangoOAuthSection(connector)
                     }
 
-                    // Credential fields
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Paste your credentials")
-                            .font(.system(size: 13, weight: .semibold))
-                        ForEach(connector.credentialFields, id: \.key) { field in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(field.label)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                                if field.isSecret {
-                                    SecureField(field.key, text: credentialBinding(for: field.key))
-                                        .textFieldStyle(.roundedBorder)
-                                } else {
-                                    TextField(field.key, text: credentialBinding(for: field.key))
-                                        .textFieldStyle(.roundedBorder)
-                                }
+                    // ── Advanced / fallback: paste credentials manually ──
+                    if connector.nangoIntegrationKey != nil {
+                        DisclosureGroup(isExpanded: $showAdvanced) {
+                            pasteCredentialsBlock(connector)
+                                .padding(.top, 10)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "wrench.adjustable")
+                                    .font(.system(size: 11))
+                                Text("Advanced: connect with manual credentials")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Spacer()
                             }
+                            .foregroundStyle(.secondary)
                         }
+                        .padding(14)
+                        .background(Color.secondary.opacity(0.04))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    } else {
+                        // No Nango integration for this connector — paste is the only path.
+                        pasteCredentialsBlock(connector)
                     }
 
                     if let error = connectError {
@@ -186,22 +191,95 @@ struct ConnectedServicesView: View {
 
                 Spacer()
 
-                Button {
-                    guard let wrapper = connectingTo else { return }
-                    performConnect(connector: wrapper.connector)
-                } label: {
-                    HStack(spacing: 6) {
-                        if isConnecting { ProgressView().scaleEffect(0.6) }
-                        Text(isConnecting ? "Testing connection…" : "Connect")
+                // Paste-credentials button is only shown when the advanced
+                // section is open (or when Nango isn't available at all).
+                let showPasteButton = connector.nangoIntegrationKey == nil || showAdvanced
+                if showPasteButton {
+                    Button {
+                        guard let wrapper = connectingTo else { return }
+                        performConnect(connector: wrapper.connector)
+                    } label: {
+                        HStack(spacing: 6) {
+                            if isConnecting { ProgressView().scaleEffect(0.6) }
+                            Text(isConnecting ? "Testing…" : "Connect with credentials")
+                        }
                     }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isConnecting || isOAuthing || !hasRequiredFields(connector))
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(isConnecting || !hasRequiredFields(connector))
             }
             .padding(20)
         }
         .frame(width: 520, height: 640)
+    }
+
+    @ViewBuilder
+    private func nangoOAuthSection(_ connector: any Connector) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "bolt.horizontal.circle.fill")
+                    .foregroundStyle(Color(hex: connector.accentColorHex))
+                Text("Connect with one click")
+                    .font(.system(size: 14, weight: .semibold))
+            }
+            Text("Opens the \(connector.name) login page. You authorise TalkIsCheap to read your data through **Nango** — no tokens to copy.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                guard let wrapper = connectingTo else { return }
+                performOAuth(connector: wrapper.connector)
+            } label: {
+                HStack(spacing: 8) {
+                    if isOAuthing { ProgressView().scaleEffect(0.6) }
+                    Image(systemName: isOAuthing ? "" : connector.icon)
+                        .opacity(isOAuthing ? 0 : 1)
+                    Text(isOAuthing ? "Waiting for authorisation…" : "Connect \(connector.name)")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color(hex: connector.accentColorHex))
+            .disabled(isOAuthing || isConnecting)
+        }
+        .padding(16)
+        .background(Color(hex: connector.accentColorHex).opacity(0.06))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color(hex: connector.accentColorHex).opacity(0.3), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private func pasteCredentialsBlock(_ connector: any Connector) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !connector.setupGuide.isEmpty {
+                setupGuideSection(connector)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Paste your credentials")
+                    .font(.system(size: 13, weight: .semibold))
+                ForEach(connector.credentialFields, id: \.key) { field in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(field.label)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        if field.isSecret {
+                            SecureField(field.key, text: credentialBinding(for: field.key))
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            TextField(field.key, text: credentialBinding(for: field.key))
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Setup guide block
@@ -301,6 +379,43 @@ struct ConnectedServicesView: View {
         connector.credentialFields
             .filter { !$0.label.lowercased().contains("optional") }
             .allSatisfy { !(credentials[$0.key] ?? "").isEmpty }
+    }
+
+    private func performOAuth(connector: any Connector) {
+        guard let integrationKey = connector.nangoIntegrationKey else { return }
+        isOAuthing = true
+        connectError = nil
+        Task {
+            do {
+                let connectionId = try await NangoClient.shared.connect(integrationKey: integrationKey)
+                try registry.connect(
+                    connector: connector,
+                    credentials: ["nangoConnectionId": connectionId]
+                )
+                // Run testConnection to verify the Nango proxy actually works
+                // for this connection — catches cases where the OAuth flow
+                // "completed" but the token doesn't have the needed scopes.
+                do {
+                    try await connector.testConnection()
+                } catch {
+                    try? await NangoClient.shared.disconnect(
+                        integrationKey: integrationKey,
+                        connectionId: connectionId
+                    )
+                    registry.disconnect(connector: connector)
+                    throw error
+                }
+                await MainActor.run {
+                    connectingTo = nil
+                    isOAuthing = false
+                }
+            } catch {
+                await MainActor.run {
+                    connectError = error.localizedDescription
+                    isOAuthing = false
+                }
+            }
+        }
     }
 
     private func performConnect(connector: any Connector) {
