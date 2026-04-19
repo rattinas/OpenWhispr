@@ -26,6 +26,12 @@ final class GitHubConnector: Connector {
     let serviceNames: [String] = ["github", "git hub", "git-hub"]
     let category: ConnectorCategory = .dev
 
+    // Nango managed OAuth — opt-in. When the user clicks "Connect with
+    // one click", we store the resulting connection ID and route all API
+    // calls through /api/nango/proxy. Pasted-token flow still works as
+    // a fallback.
+    let nangoIntegrationKey: String? = "github-getting-started"
+
     let setupGuide: [SetupStep] = [
         SetupStep(
             "1. Create a fine-grained Personal Access Token",
@@ -69,21 +75,38 @@ final class GitHubConnector: Connector {
     private var token: String?
     private var owner: String?
     private var repo: String?
+    /// Set when the user authorised via Nango OAuth (one-click).
+    /// Takes precedence over `token` when present.
+    private var nangoConnectionId: String?
 
     // MARK: isConnected
 
     var isConnected: Bool {
-        guard let t = token else { return false }
-        return !t.isEmpty
+        if let id = nangoConnectionId, !id.isEmpty { return true }
+        if let t = token, !t.isEmpty { return true }
+        return false
     }
 
     // MARK: connect / disconnect
 
     func connect(credentials: [String: String]) throws {
+        // Nango OAuth path — just a connection id, no scopes to paste.
+        if let nid = credentials["nangoConnectionId"]?.trimmingCharacters(in: .whitespaces), !nid.isEmpty {
+            nangoConnectionId = nid
+            // Nango mode overrides pasted token. Keep owner/repo in case
+            // the user set a focus repo manually.
+            owner = credentials["owner"]?.trimmingCharacters(in: .whitespaces)
+            repo  = credentials["repo"]?.trimmingCharacters(in: .whitespaces)
+            token = nil
+            return
+        }
+
+        // Legacy paste-token path.
         let t = (credentials["token"] ?? "").trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { throw ConnectorError.missingCredential("token") }
 
         token = t
+        nangoConnectionId = nil
         owner = (credentials["owner"] ?? "").trimmingCharacters(in: .whitespaces)
         repo  = (credentials["repo"]  ?? "").trimmingCharacters(in: .whitespaces)
     }
@@ -92,22 +115,21 @@ final class GitHubConnector: Connector {
         token = nil
         owner = nil
         repo  = nil
+        nangoConnectionId = nil
     }
 
     // MARK: query
 
     func query(intent: ConnectorIntent) async throws -> ConnectorResult {
-        guard isConnected, let tok = token else {
-            throw ConnectorError.notConnected(name)
-        }
+        guard isConnected else { throw ConnectorError.notConnected(name) }
 
         let hasOwner = !(owner ?? "").isEmpty
         let hasRepo  = !(repo  ?? "").isEmpty
 
         if hasOwner && hasRepo, let ownerStr = owner, let repoStr = repo {
-            return try await queryRepo(owner: ownerStr, repo: repoStr, token: tok, intent: intent)
+            return try await queryRepo(owner: ownerStr, repo: repoStr, intent: intent)
         } else {
-            return try await queryUser(token: tok, intent: intent)
+            return try await queryUser(intent: intent)
         }
     }
 
@@ -116,15 +138,13 @@ final class GitHubConnector: Connector {
     private func queryRepo(
         owner: String,
         repo: String,
-        token: String,
         intent: ConnectorIntent
     ) async throws -> ConnectorResult {
-        let issuesURL = "https://api.github.com/repos/\(owner)/\(repo)/issues?state=open&per_page=30"
-        let pullsURL  = "https://api.github.com/repos/\(owner)/\(repo)/pulls?state=open&per_page=20"
+        let issuesPath = "/repos/\(owner)/\(repo)/issues?state=open&per_page=30"
+        let pullsPath  = "/repos/\(owner)/\(repo)/pulls?state=open&per_page=20"
 
-        // Fetch issues and PRs concurrently
-        async let issuesData = apiGet(url: issuesURL, token: token)
-        async let pullsData  = apiGet(url: pullsURL,  token: token)
+        async let issuesData = githubGet(path: issuesPath)
+        async let pullsData  = githubGet(path: pullsPath)
 
         let (issuesRaw, pullsRaw) = try await (issuesData, pullsData)
 
@@ -197,12 +217,9 @@ final class GitHubConnector: Connector {
 
     // MARK: User-scoped query
 
-    private func queryUser(token: String, intent: ConnectorIntent) async throws -> ConnectorResult {
-        let userURL  = "https://api.github.com/user"
-        let reposURL = "https://api.github.com/user/repos?sort=updated&per_page=10"
-
-        async let userData  = apiGet(url: userURL,  token: token)
-        async let reposData = apiGet(url: reposURL, token: token)
+    private func queryUser(intent: ConnectorIntent) async throws -> ConnectorResult {
+        async let userData  = githubGet(path: "/user")
+        async let reposData = githubGet(path: "/user/repos?sort=updated&per_page=10")
 
         let (userRaw, reposRaw) = try await (userData, reposData)
 
@@ -252,9 +269,28 @@ final class GitHubConnector: Connector {
 
     // MARK: Private helpers
 
-    private func apiGet(url: String, token: String) async throws -> Data {
-        guard let requestURL = URL(string: url) else {
-            throw ConnectorError.apiError("Invalid URL: \(url)")
+    /// Routes a GitHub path either through Nango (when OAuth'd) or
+    /// directly to api.github.com (when the user pasted a PAT).
+    private func githubGet(path: String) async throws -> Data {
+        if let connectionId = nangoConnectionId, !connectionId.isEmpty,
+           let integrationKey = nangoIntegrationKey {
+            return try await NangoClient.shared.proxy(
+                integrationKey: integrationKey,
+                connectionId: connectionId,
+                path: path,
+                method: "GET"
+            )
+        }
+        guard let tok = token, !tok.isEmpty else {
+            throw ConnectorError.notConnected(name)
+        }
+        return try await directGitHubGet(path: path, token: tok)
+    }
+
+    private func directGitHubGet(path: String, token: String) async throws -> Data {
+        let fullURL = "https://api.github.com\(path)"
+        guard let requestURL = URL(string: fullURL) else {
+            throw ConnectorError.apiError("Invalid URL: \(fullURL)")
         }
 
         var request = URLRequest(url: requestURL, timeoutInterval: 15)

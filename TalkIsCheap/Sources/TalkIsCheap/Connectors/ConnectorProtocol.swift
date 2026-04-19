@@ -192,6 +192,16 @@ protocol Connector: AnyObject {
     /// bad token immediately instead of on the user's first voice query.
     /// Throws `ConnectorError` on failure.
     func testConnection() async throws
+
+    /// Nango integration `unique_key` if this connector supports managed
+    /// OAuth via Nango. nil means the user has to fall back to pasting
+    /// credentials manually. Keeping it optional lets us roll out OAuth
+    /// one integration at a time.
+    var nangoIntegrationKey: String? { get }
+}
+
+extension Connector {
+    var nangoIntegrationKey: String? { nil }
 }
 
 extension Connector {
