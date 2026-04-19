@@ -23,6 +23,7 @@ final class StripeConnector: Connector {
 
     let serviceNames: [String] = ["stripe"]
     let category: ConnectorCategory = .ecommerce
+    let nangoProvider: String? = "stripe"
 
     let setupGuide: [SetupStep] = [
         SetupStep(
@@ -63,9 +64,10 @@ final class StripeConnector: Connector {
 
     private var secretKey: String?
 
+    @MainActor
     var isConnected: Bool {
-        guard let key = secretKey else { return false }
-        return !key.isEmpty
+        if isNangoConnected { return true }
+        return !(secretKey ?? "").isEmpty
     }
 
     // MARK: - Connect / Disconnect
@@ -86,25 +88,28 @@ final class StripeConnector: Connector {
 
     // MARK: - Query
 
+    @MainActor
     func query(intent: ConnectorIntent) async throws -> ConnectorResult {
-        guard let key = secretKey, !key.isEmpty else {
-            throw ConnectorError.notConnected(name)
-        }
-
         let start = Int(intent.timeRange.startDate.timeIntervalSince1970)
         let end   = Int(intent.timeRange.endDate.timeIntervalSince1970)
 
-        // Fetch balance and charges concurrently
-        async let balanceData = apiGet(
-            url: "https://api.stripe.com/v1/balance",
-            key: key
-        )
-        async let chargesData = apiGet(
-            url: "https://api.stripe.com/v1/charges?created[gte]=\(start)&created[lte]=\(end)&limit=100",
-            key: key
-        )
+        let balancePath = "/v1/balance"
+        let chargesPath = "/v1/charges?created%5Bgte%5D=\(start)&created%5Blte%5D=\(end)&limit=100"
 
-        let (balanceJSON, chargesJSON) = try await (balanceData, chargesData)
+        // Prefer Nango when connected — zero-touch OAuth.
+        let (balanceJSON, chargesJSON): (Data, Data)
+        if isNangoConnected {
+            async let bal = nangoProxy(path: balancePath)
+            async let chg = nangoProxy(path: chargesPath)
+            (balanceJSON, chargesJSON) = try await (bal, chg)
+        } else {
+            guard let key = secretKey, !key.isEmpty else {
+                throw ConnectorError.notConnected(name)
+            }
+            async let bal = apiGet(url: "https://api.stripe.com\(balancePath)", key: key)
+            async let chg = apiGet(url: "https://api.stripe.com\(chargesPath)", key: key)
+            (balanceJSON, chargesJSON) = try await (bal, chg)
+        }
 
         // Parse balance
         guard

@@ -198,10 +198,17 @@ protocol Connector: AnyObject {
     /// credentials manually. Keeping it optional lets us roll out OAuth
     /// one integration at a time.
     var nangoIntegrationKey: String? { get }
+
+    /// Underlying upstream provider as Nango reports it ("github", "stripe",
+    /// "shopify", etc.). We match on this instead of the user-picked
+    /// integration unique_key so the connector works no matter how the
+    /// user named their integration in the Nango dashboard.
+    var nangoProvider: String? { get }
 }
 
 extension Connector {
     var nangoIntegrationKey: String? { nil }
+    var nangoProvider: String? { nil }
 }
 
 extension Connector {

@@ -3,17 +3,25 @@ import AppKit
 
 struct ConnectedServicesView: View {
     @ObservedObject private var catalog = NangoCatalog.shared
+    @ObservedObject private var settings = AppSettings.shared
     @State private var connectingTo: NangoClient.CatalogEntry?
     @State private var oauthError: String?
     @State private var isOAuthing = false
     @State private var search = ""
 
+    private var activePack: IndustryPack? {
+        guard !settings.industryPack.isEmpty else { return nil }
+        return IndustryPack.all.first { $0.id == settings.industryPack }
+    }
+
     var body: some View {
         Form {
             Section {
-                Text("Connect any of your business tools via one-click OAuth. When you use Command Mode (double-tap hotkey), TalkIsCheap detects which service you're asking about and answers from live data.")
+                Text("Connect your tools via one-click OAuth. When you use Command Mode (double-tap hotkey), TalkIsCheap detects which service you're asking about and answers from live data.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                industryPickerRow
 
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
@@ -56,6 +64,26 @@ struct ConnectedServicesView: View {
                     }
                 }
             } else {
+                // Industry-prioritised "Recommended for you" section when a pack is picked.
+                if let pack = activePack {
+                    let recommended = entriesForPack(pack)
+                    if !recommended.isEmpty {
+                        Section {
+                            ForEach(recommended, id: \.uniqueKey) { entry in
+                                row(entry, highlight: true)
+                            }
+                        } header: {
+                            HStack(spacing: 6) {
+                                Text(pack.emoji)
+                                Text("Recommended for \(pack.name)")
+                            }
+                        } footer: {
+                            Text(pack.tagline).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                // All other services, grouped by category.
                 ForEach(filteredGroups(), id: \.0) { cat, list in
                     Section {
                         ForEach(list, id: \.uniqueKey) { entry in
@@ -80,6 +108,60 @@ struct ConnectedServicesView: View {
         }
     }
 
+    // MARK: - Industry picker
+
+    @ViewBuilder
+    private var industryPickerRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                industryChip(id: "", emoji: "🌐", label: "All", tagline: "Browse every service")
+                ForEach(IndustryPack.all) { pack in
+                    industryChip(id: pack.id, emoji: pack.emoji, label: pack.name, tagline: pack.tagline)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    @ViewBuilder
+    private func industryChip(id: String, emoji: String, label: String, tagline: String) -> some View {
+        let isActive = settings.industryPack == id
+        Button {
+            settings.industryPack = id
+        } label: {
+            HStack(spacing: 6) {
+                Text(emoji)
+                Text(label)
+                    .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(isActive ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(isActive ? Color.accentColor : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(tagline)
+    }
+
+    /// Filter entries that belong to this pack (by Nango provider name) —
+    /// and sort them by the pack's suggested priority order.
+    private func entriesForPack(_ pack: IndustryPack) -> [NangoClient.CatalogEntry] {
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let matched = catalog.entries.compactMap { entry -> (Int, NangoClient.CatalogEntry)? in
+            guard let pos = pack.priority(for: entry.provider) else { return nil }
+            if !needle.isEmpty, !entry.displayName.lowercased().contains(needle),
+               !entry.provider.lowercased().contains(needle) {
+                return nil
+            }
+            return (pos, entry)
+        }
+        return matched.sorted { $0.0 < $1.0 }.map { $0.1 }
+    }
+
     // MARK: - Rows
 
     private func filteredGroups() -> [(String, [NangoClient.CatalogEntry])] {
@@ -97,13 +179,13 @@ struct ConnectedServicesView: View {
     }
 
     @ViewBuilder
-    private func row(_ entry: NangoClient.CatalogEntry) -> some View {
+    private func row(_ entry: NangoClient.CatalogEntry, highlight: Bool = false) -> some View {
         HStack(spacing: 12) {
             integrationIcon(entry)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.displayName)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13, weight: highlight ? .semibold : .medium))
                 if entry.connected {
                     Label("Connected", systemImage: "checkmark.circle.fill")
                         .font(.caption)

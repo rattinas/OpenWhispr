@@ -42,6 +42,53 @@ final class NangoCatalog: ObservableObject {
             return (cat, list)
         }
     }
+
+    /// Find the first connected integration matching a given upstream provider.
+    /// Used by the specific Connector query handlers (Stripe/Shopify/etc.)
+    /// to get the connection_id they need for Nango proxy calls.
+    func connectedEntry(forProvider provider: String) -> NangoClient.CatalogEntry? {
+        entries.first { $0.connected && $0.provider.lowercased() == provider.lowercased() }
+    }
+}
+
+// MARK: - Connector convenience: run a Nango-proxied request if the
+// catalog reports this provider as connected for the licensee.
+
+extension Connector {
+    /// Makes a Nango-proxied upstream request for this connector's
+    /// `nangoProvider`. Throws `ConnectorError.notConnected` if the
+    /// catalog doesn't have a live connection for this provider.
+    @MainActor
+    func nangoProxy(
+        path: String,
+        method: String = "GET",
+        body: Any? = nil
+    ) async throws -> Data {
+        guard let provider = nangoProvider else {
+            throw ConnectorError.notConnected(name)
+        }
+        guard let entry = NangoCatalog.shared.connectedEntry(forProvider: provider),
+              let connectionId = entry.connectionId
+        else {
+            throw ConnectorError.notConnected(name)
+        }
+        return try await NangoClient.shared.proxy(
+            integrationKey: entry.uniqueKey,
+            connectionId: connectionId,
+            path: path,
+            method: method,
+            body: body
+        )
+    }
+
+    /// True when the catalog reports a live connection for this connector's
+    /// `nangoProvider`. Individual connectors can override isConnected
+    /// to also count a pasted-credential state.
+    @MainActor
+    var isNangoConnected: Bool {
+        guard let provider = nangoProvider else { return false }
+        return NangoCatalog.shared.connectedEntry(forProvider: provider) != nil
+    }
 }
 
 // MARK: - Category presentation helpers
