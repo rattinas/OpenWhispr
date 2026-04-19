@@ -17,8 +17,18 @@ final class PipedreamCatalog: ObservableObject {
     func refresh() async {
         isLoading = true
         loadError = nil
-        async let appsFuture = Task { try? await PipedreamClient.shared.apps() }.value
-        async let accountsFuture = Task { try? await PipedreamClient.shared.listAccounts() }.value
+
+        // Run both requests independently so we see *which* failed and why.
+        var appsErr: Error?
+        var accountsErr: Error?
+        async let appsFuture: [PipedreamClient.AppInfo]? = Task {
+            do { return try await PipedreamClient.shared.apps() }
+            catch { appsErr = error; return nil }
+        }.value
+        async let accountsFuture: [PipedreamClient.Account]? = Task {
+            do { return try await PipedreamClient.shared.listAccounts() }
+            catch { accountsErr = error; return nil }
+        }.value
         let (newApps, newAccounts) = await (appsFuture, accountsFuture)
 
         if let list = newApps {
@@ -28,8 +38,12 @@ final class PipedreamCatalog: ObservableObject {
         }
         if let list = newAccounts { self.accounts = list }
 
-        if newApps == nil && newAccounts == nil {
-            self.loadError = "Couldn't reach TalkIsCheap Server."
+        if newApps == nil || newAccounts == nil {
+            let parts = [
+                appsErr.map { "apps: \($0.localizedDescription)" },
+                accountsErr.map { "accounts: \($0.localizedDescription)" }
+            ].compactMap { $0 }
+            self.loadError = parts.isEmpty ? "Couldn't reach TalkIsCheap Server." : parts.joined(separator: " · ")
         }
         isLoading = false
     }
