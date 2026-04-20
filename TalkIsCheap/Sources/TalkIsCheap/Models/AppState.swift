@@ -563,7 +563,39 @@ final class AppState: ObservableObject {
                 return
             }
 
-            // 2. Search + Summarize — use streaming for proxy users
+            // 2. Command Mode: route to a connected service when possible.
+            //    This runs BEFORE the streaming web-search path — otherwise
+            //    queries like "was steht in meinem Kalender" would go
+            //    straight to Brave+Claude and answer "I can't access your
+            //    calendar" instead of hitting Google Calendar via Pipedream.
+            if AppSettings.shared.commandsUnlocked {
+                await PipedreamCatalog.shared.ensureAccountsLoaded()
+                let intent = IntentDetector.detect(from: query)
+                let registry = ConnectorRegistry.shared
+                if let connector = registry.connector(for: intent) {
+                    do {
+                        Log.write("Routing voice query to connector: \(connector.name)")
+                        let result = try await registry.query(connector: connector, intent: intent)
+                        SearchPanelManager.shared.showResult(SearchResult(
+                            query: query,
+                            answer: result.answer,
+                            sources: [],
+                            images: [],
+                            widgetUrl: nil,
+                            connectorId: result.connectorId,
+                            connectorName: result.connectorName,
+                            connectorIcon: result.icon
+                        ))
+                        SoundFeedback.done()
+                        status = .ready
+                        return
+                    } catch {
+                        Log.write("Connector \(connector.name) error: \(error.localizedDescription) — falling back to web search")
+                    }
+                }
+            }
+
+            // 3. Search + Summarize — use streaming for proxy users
             if settings.shouldUseProxy {
                 let language = settings.language == "auto" ? nil : settings.language
                 SearchPanelManager.shared.startStreaming(query: query)
