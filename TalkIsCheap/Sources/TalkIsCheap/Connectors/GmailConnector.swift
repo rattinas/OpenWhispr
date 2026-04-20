@@ -49,6 +49,28 @@ final class GmailConnector: Connector {
 
         let q = intent.rawQuery.lowercased()
 
+        // AGENT path — user wants to SEND or REPLY to email.
+        // Handled before triage because "antworte" is ambiguous: either
+        // "show me what needs answering" (triage) OR "send this reply"
+        // (agent). The presence of an imperative-send phrase + concrete
+        // content ("mit: …", "mit dem text", "saying …") tells us it's
+        // the agent flow.
+        let sendImperatives = [
+            "schick", "sende", "verschick", "schreib ",
+            "send an email", "send a mail", "send email", "send mail",
+            "compose an email", "compose a mail",
+        ]
+        let replyImperatives = [
+            "antworte ", "antworte auf", "antworte der", "antworte dem",
+            "antworte an ", "beantworte die", "beantworte den", "beantworte dem",
+            "reply to ", "reply with ", "respond to ",
+        ]
+        let isSend = sendImperatives.contains { q.contains($0) }
+        let isReply = replyImperatives.contains { q.contains($0) }
+        if isSend || isReply {
+            return try await sendEmailAgent(intent: intent, isReply: isReply)
+        }
+
         // Fire triage whenever the user mentions emails AND any action
         // word — covers "auf welche Mails muss ich antworten", "welche
         // emails sind wichtig", "should I reply to anything", etc.
@@ -71,6 +93,171 @@ final class GmailConnector: Connector {
             return try await lastMessageFromSender(sender, intent: intent)
         }
         return try await recentInboxSummary(intent: intent)
+    }
+
+    // MARK: - Send / Reply agent
+
+    private func sendEmailAgent(intent: ConnectorIntent, isReply: Bool) async throws -> ConnectorResult {
+        // If this is a reply and the sender is named ("antworte Moritz"),
+        // pull the latest message from that sender so Claude has the thread
+        // context.
+        var threadContext = ""
+        var suggestedThreadId: String?
+        var suggestedToEmail: String?
+        var suggestedOriginalSubject: String?
+
+        if isReply, let sender = extractSender(from: intent.rawQuery) {
+            let q = "from:\"\(sender)\""
+            let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
+            if let listData = try? await apiGet(path: "/gmail/v1/users/me/messages?maxResults=1&q=\(encoded)"),
+               let listJson = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
+               let msgs = listJson["messages"] as? [[String: Any]], let first = msgs.first,
+               let mid = first["id"] as? String,
+               let msgData = try? await apiGet(path: "/gmail/v1/users/me/messages/\(mid)?format=full"),
+               let msg = try? JSONSerialization.jsonObject(with: msgData) as? [String: Any] {
+                suggestedThreadId = msg["threadId"] as? String
+                let headers = ((msg["payload"] as? [String: Any])?["headers"] as? [[String: Any]]) ?? []
+                func header(_ name: String) -> String {
+                    headers.first { ($0["name"] as? String)?.lowercased() == name.lowercased() }?["value"] as? String ?? ""
+                }
+                let from = header("From")
+                suggestedToEmail = extractBareEmail(from: from)
+                suggestedOriginalSubject = header("Subject")
+                let body = extractPlainBody(payload: msg["payload"] as? [String: Any] ?? [:])
+                let trimmed = body.count > 2000 ? String(body.prefix(2000)) + "…" : body
+                threadContext = """
+                ## Original email being replied to
+
+                **From:** \(from)
+                **Subject:** \(header("Subject"))
+                **Date:** \(header("Date"))
+
+                \(trimmed)
+                """
+            }
+        }
+
+        let nowISO = ISO8601DateFormatter().string(from: Date())
+        let system = """
+        You extract email-send parameters from a natural-language voice \
+        command. Return ONLY strict JSON:
+        {
+          "mode": "reply" | "new",
+          "to": string,        // recipient email address
+          "subject": string,   // use "Re: <original>" for replies
+          "body": string,      // final body text — polish the user's spoken
+                               // content into a clean, professional message,
+                               // but keep the tone and language they used
+          "threadId": string | null   // required for replies
+        }
+        Current moment: \(nowISO). If the user only said "ja passt" or
+        similar short content, produce a short reply in the same language.
+        Do not invent recipient addresses — if unsure, copy from the
+        context below. If 'mode' is 'reply', copy the threadId from the
+        original email exactly.
+        """
+
+        var userContent = "**User command:** \(intent.rawQuery)\n\n"
+        if !threadContext.isEmpty { userContent += threadContext + "\n\n" }
+        if let to = suggestedToEmail { userContent += "Suggested recipient: \(to)\n" }
+        if let tid = suggestedThreadId { userContent += "Suggested threadId: \(tid)\n" }
+        if let subj = suggestedOriginalSubject, !subj.isEmpty {
+            userContent += "Original subject (prefix with Re:): \(subj)\n"
+        }
+
+        let extracted = try await ProxyClient.polish(
+            text: userContent,
+            systemPrompt: system,
+            model: "claude-haiku-4-5-20251001"
+        )
+        let cleanJSON = extracted
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let data = cleanJSON.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let to = parsed["to"] as? String,
+              let subject = parsed["subject"] as? String,
+              let body = parsed["body"] as? String,
+              !to.isEmpty
+        else {
+            return ConnectorResult(
+                connectorId: id, connectorName: name, icon: icon,
+                answer: "⚠️ Ich konnte nicht rausfinden, an wen ich die Mail schicken soll. Sag z.B.: \"Antworte auf die Mail von Moritz mit: ja passt\" oder \"Schick alex@beispiel.de eine Mail, Betreff Lunch, Text: morgen 12 Uhr passt?\".\n\nExtracted: \(cleanJSON.prefix(400))",
+                rawData: ["extracted": cleanJSON],
+                timeRange: intent.timeRange, cachedAt: Date()
+            )
+        }
+
+        // Build RFC 2822 MIME text and base64url encode for Gmail API.
+        var mime = ""
+        mime += "To: \(to)\r\n"
+        mime += "Subject: \(subject)\r\n"
+        mime += "Content-Type: text/plain; charset=UTF-8\r\n"
+        mime += "\r\n"
+        mime += body
+        let raw = Data(mime.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+
+        var sendBody: [String: Any] = ["raw": raw]
+        if let tid = parsed["threadId"] as? String, !tid.isEmpty {
+            sendBody["threadId"] = tid
+        }
+
+        let sentData = try await pipedreamProxy(
+            url: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+            method: "POST",
+            body: sendBody
+        )
+        guard let sentJson = try? JSONSerialization.jsonObject(with: sentData) as? [String: Any] else {
+            throw ConnectorError.parseError("Send response unparseable")
+        }
+        if let err = sentJson["error"] as? [String: Any],
+           let msg = err["message"] as? String {
+            throw ConnectorError.apiError("Gmail: \(msg)")
+        }
+
+        let isGerman = looksGerman(intent.rawQuery)
+        let sentId = sentJson["id"] as? String ?? ""
+        var md = "## ✅ \(isGerman ? "E-Mail gesendet" : "Email sent")\n\n"
+        md += "**An:** \(to)\n"
+        md += "**\(isGerman ? "Betreff" : "Subject"):** \(subject)\n\n"
+        md += body
+        if !sentId.isEmpty {
+            md += "\n\n[\(isGerman ? "In Gmail öffnen" : "Open in Gmail")](https://mail.google.com/mail/u/0/#sent/\(sentId))"
+        }
+
+        return ConnectorResult(
+            connectorId: id, connectorName: name, icon: icon,
+            answer: md,
+            rawData: [
+                "sentId": sentId,
+                "to": to, "subject": subject, "body": body,
+                "threadId": (parsed["threadId"] as? String) ?? "",
+            ],
+            timeRange: intent.timeRange,
+            cachedAt: Date()
+        )
+    }
+
+    nonisolated private func extractBareEmail(from rfc5322: String) -> String? {
+        // "Name <email@example.com>" → "email@example.com"
+        if let open = rfc5322.firstIndex(of: "<"),
+           let close = rfc5322[open...].firstIndex(of: ">") {
+            return String(rfc5322[rfc5322.index(after: open)..<close])
+        }
+        // Already plain
+        if rfc5322.contains("@") { return rfc5322.trimmingCharacters(in: .whitespaces) }
+        return nil
+    }
+
+    nonisolated private func looksGerman(_ s: String) -> Bool {
+        let q = s.lowercased()
+        let markers = ["antworte", "schick", "sende", "schreib", "heute", "morgen", "einen", "eine", "mit ", "mir"]
+        return markers.contains { q.contains($0) }
     }
 
     // MARK: - Smart triage (Claude Haiku over a rich inbox snapshot)
