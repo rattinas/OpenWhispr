@@ -74,9 +74,18 @@ final class PipedreamClient: NSObject {
     // MARK: - Connect flow
 
     /// End-to-end connect flow for a given Pipedream app slug.
-    /// Opens the Connect UI in ASWebAuthenticationSession, polls
-    /// /api/pipedream/accounts until the new account appears.
-    /// Returns the fresh Account on success.
+    ///
+    /// Opens Pipedream's Connect URL in the user's DEFAULT browser
+    /// (Safari / Chrome / whatever) rather than ASWebAuthenticationSession.
+    /// Reason: Pipedream Connect in development mode requires the user
+    /// to be signed into pipedream.com in that browser, and ASWebAuthn's
+    /// cookie jar is separate from the system browser on macOS — the
+    /// Pipedream session cookie is never picked up, so the Connect UI
+    /// rejects the flow with "You must be signed into Pipedream".
+    ///
+    /// The user's default browser naturally carries their Pipedream
+    /// login, so the Connect UI loads immediately. We poll our backend
+    /// for up to 3 minutes to detect when they've finished authorising.
     func connect(app: String) async throws -> Account {
         let before = (try? await listAccounts()) ?? []
         let beforeIds = Set(before.map(\.id))
@@ -86,31 +95,20 @@ final class PipedreamClient: NSObject {
             throw PDError.sessionFailed("Missing connect_link_url")
         }
 
-        // Open Connect UI in ASWebAuthenticationSession. Pipedream's
-        // Connect UI ends on a static success page inside the session
-        // window — we close it by polling our backend and letting the
-        // user dismiss the browser manually.
-        try await withUnsafeThrowingContinuation { (cont: UnsafeContinuation<Void, Error>) in
-            let asws = ASWebAuthenticationSession(
-                url: url,
-                callbackURLScheme: "talkischeap-never-fires"
-            ) { _, _ in
-                cont.resume()
-            }
-            asws.presentationContextProvider = self
-            asws.prefersEphemeralWebBrowserSession = false
-            if !asws.start() {
-                cont.resume(throwing: PDError.sessionFailed("Browser session failed to start"))
-            }
-        }
+        // Open in default browser. User's existing Pipedream cookie
+        // works automatically; Gmail/Shopify/… OAuth UI uses whatever
+        // they're already logged into.
+        NSWorkspace.shared.open(url)
 
-        let deadline = Date().addingTimeInterval(60)
+        // Poll until the new account appears on our backend, or give up.
+        // 3-minute ceiling accounts for "user got distracted, came back".
+        let deadline = Date().addingTimeInterval(180)
         while Date() < deadline {
             let now = (try? await listAccounts()) ?? []
             if let fresh = now.first(where: { !beforeIds.contains($0.id) }) {
                 return fresh
             }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
         throw PDError.timeout
     }
