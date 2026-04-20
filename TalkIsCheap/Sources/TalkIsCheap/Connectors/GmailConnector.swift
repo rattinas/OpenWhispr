@@ -258,24 +258,68 @@ final class GmailConnector: Connector {
             return (json["emailAddress"] as? String)?.lowercased() ?? ""
         }()
 
-        // 2. Build a STRICT filter. Automated senders and system notifications
-        //    do not "need a reply" — they just drown the signal.
+        // 2. Fetch the user's labels — their own organisation system is
+        //    the best signal for "what needs attention". If they've
+        //    labelled something 'needs answer', 'dringend', 'wichtig',
+        //    'todo', 'wait', 'follow up' — that's ground truth.
+        let labelData = try? await apiGet(path: "/gmail/v1/users/me/labels")
+        let labelsJson = (try? labelData.flatMap { try JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
+        let rawLabels = (labelsJson?["labels"] as? [[String: Any]]) ?? []
+        let labels: [(id: String, name: String)] = rawLabels.compactMap {
+            guard let id = $0["id"] as? String, let name = $0["name"] as? String else { return nil }
+            return (id, name)
+        }
+        let actionableHints = [
+            "answer", "reply", "respond",            // EN intent
+            "urgent", "action", "todo", "to-do", "to do",
+            "follow up", "follow-up", "followup",
+            "wait", "waiting",
+            "antwort", "antworten", "beantwort",     // DE intent
+            "wichtig", "dringend", "aufgabe",
+            "erledig", "rückmeld",
+            "priority", "priorität",
+        ]
+        let actionableLabelNames: [String] = labels
+            .map { $0.name }
+            .filter { label in
+                let n = label.lowercased()
+                return actionableHints.contains { n.contains($0) }
+            }
+        Log.write("Gmail triage: matched actionable user labels: \(actionableLabelNames)")
+
+        // 3. Build the Gmail search query:
+        //    a) user's own actionable labels (strongest signal)
+        //    b) Gmail's IS_IMPORTANT system flag (Gmail's own AI)
+        //    c) unread in inbox (fallback — only if no stronger signal hits)
+        //    MINUS automated senders + low-signal categories.
+        var queryParts: [String] = []
+        var orClauses: [String] = []
+        for name in actionableLabelNames {
+            let escaped = name.contains(" ") ? "\"\(name)\"" : name
+            orClauses.append("label:\(escaped)")
+        }
+        // Always include unread + important as OR signals so we don't
+        // return an empty result if the user hasn't labelled anything yet.
+        orClauses.append("is:unread")
+        orClauses.append("is:important")
+        if !orClauses.isEmpty {
+            queryParts.append("(\(orClauses.joined(separator: " OR ")))")
+        }
+        queryParts.append("in:inbox")
+        queryParts.append("-category:promotions")
+        queryParts.append("-category:updates")
+        queryParts.append("-category:forums")
+        queryParts.append("-category:social")
         let excludedFroms = [
             "noreply", "no-reply", "donotreply", "do-not-reply",
             "notifications", "notification", "notify",
             "mailer-daemon", "postmaster",
             "calendar-notification@google.com",
             "bounces", "reply+",
-            "newsletter", "news@", "marketing@",
-            "updates@", "alerts@", "info@",
+            "newsletter",
         ]
-        var qParts: [String] = [
-            "is:unread", "in:inbox",
-            "-category:promotions", "-category:updates",
-            "-category:forums", "-category:social",
-        ]
-        for f in excludedFroms { qParts.append("-from:\(f)") }
-        let gmailQuery = qParts.joined(separator: " ")
+        for f in excludedFroms { queryParts.append("-from:\(f)") }
+        let gmailQuery = queryParts.joined(separator: " ")
         let encodedQ = gmailQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? gmailQuery
 
         // 3. Use THREADS (not messages) so we can check the last-sender of
@@ -294,6 +338,7 @@ final class GmailConnector: Connector {
         }
 
         // 4. For each thread: fetch full, check last sender ≠ me, keep body.
+        //    Also compute a priority score based on labels + signals.
         struct ThreadSnapshot {
             let threadId: String
             let messageId: String
@@ -302,9 +347,14 @@ final class GmailConnector: Connector {
             let subject: String
             let date: String
             let body: String
-            let hasQuestion: Bool
+            let score: Int
+            let matchedLabels: [String]
         }
-        let threadIds = threadStubs.prefix(20).compactMap { $0["id"] as? String }
+        // Pre-compute the set of actionable label names (lowercased) for
+        // fast membership checks inside the task group.
+        let actionableLabelSet = Set(actionableLabelNames.map { $0.lowercased() })
+        let labelIdToName = Dictionary(uniqueKeysWithValues: labels.map { ($0.id, $0.name) })
+        let threadIds = threadStubs.prefix(25).compactMap { $0["id"] as? String }
         var candidates: [ThreadSnapshot] = []
         try await withThrowingTaskGroup(of: ThreadSnapshot?.self) { group in
             for tid in threadIds {
@@ -321,20 +371,32 @@ final class GmailConnector: Connector {
                     }
                     let from = header("From")
                     let bareEmail = self.extractBareEmail(from: from)?.lowercased() ?? ""
-                    // Skip threads I sent last — already handled from my side.
                     if !myEmail.isEmpty, bareEmail == myEmail { return nil }
-                    // Secondary safety net against automated senders.
                     if self.looksAutomated(from: from, email: bareEmail) { return nil }
 
                     let body = self.extractPlainBody(payload: payload).trimmingCharacters(in: .whitespacesAndNewlines)
                     if body.isEmpty { return nil }
-                    let hasQuestion = body.contains("?") ||
-                        body.lowercased().contains("please") ||
-                        body.lowercased().contains("können sie") ||
-                        body.lowercased().contains("könnten sie") ||
-                        body.lowercased().contains("would you") ||
-                        body.lowercased().contains("could you") ||
-                        body.lowercased().contains("let me know")
+
+                    // Gmail labels on the *last* message (most relevant).
+                    let labelIds = (last["labelIds"] as? [String]) ?? []
+                    let labelNamesOnMsg = labelIds.compactMap { labelIdToName[$0] }
+                    let matched = labelNamesOnMsg.filter { actionableLabelSet.contains($0.lowercased()) }
+
+                    // Scoring: label hits dominate, then system signals,
+                    // then body-content signals. Higher = more urgent.
+                    var score = 0
+                    score += matched.count * 12                  // user urgency labels
+                    if labelIds.contains("STARRED") { score += 6 }
+                    if labelIds.contains("IMPORTANT") { score += 4 }
+                    if labelIds.contains("UNREAD") { score += 2 }
+                    let lowered = body.lowercased()
+                    if body.contains("?") { score += 3 }
+                    for ask in ["please", "bitte", "können sie", "könnten sie", "would you", "could you", "let me know", "dringend", "wichtig"] {
+                        if lowered.contains(ask) { score += 2; break }
+                    }
+                    // Single-message threads (no back-and-forth yet) are more
+                    // likely to need a reply than long chains.
+                    if messages.count == 1 { score += 1 }
 
                     return ThreadSnapshot(
                         threadId: tid,
@@ -344,18 +406,16 @@ final class GmailConnector: Connector {
                         subject: header("Subject"),
                         date: header("Date"),
                         body: body,
-                        hasQuestion: hasQuestion
+                        score: score,
+                        matchedLabels: matched
                     )
                 }
             }
             for try await s in group { if let s { candidates.append(s) } }
         }
 
-        // 5. Rank: emails with a question / ask are MORE urgent than plain FYI.
-        candidates.sort { a, b in
-            if a.hasQuestion != b.hasQuestion { return a.hasQuestion && !b.hasQuestion }
-            return false
-        }
+        // 5. Rank by score (labels weigh most), cap to top 3.
+        candidates.sort { $0.score > $1.score }
         let topN = Array(candidates.prefix(3))
 
         if topN.isEmpty {
@@ -422,9 +482,17 @@ final class GmailConnector: Connector {
                 EditableField(key: "subject", label: isGerman ? "Betreff" : "Subject", multiline: false, value: replySubject),
                 EditableField(key: "body", label: isGerman ? "Nachricht" : "Message", multiline: true, value: d.draft),
             ]
+            let baseTitle = isGerman ? "Antwort senden an \(cleanFrom(snap.from))" : "Reply to \(cleanFrom(snap.from))"
+            let fullTitle: String
+            if !snap.matchedLabels.isEmpty {
+                let joined = snap.matchedLabels.joined(separator: ", ")
+                fullTitle = "\(baseTitle)  ·  🏷 \(joined)"
+            } else {
+                fullTitle = baseTitle
+            }
             return PendingAction(
                 kind: "gmail.send",
-                title: isGerman ? "Antwort senden an \(cleanFrom(snap.from))" : "Reply to \(cleanFrom(snap.from))",
+                title: fullTitle,
                 appSlug: "gmail",
                 endpoint: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
                 method: "POST",
@@ -434,6 +502,7 @@ final class GmailConnector: Connector {
                     "originalSubject": snap.subject,
                     "originalFrom": snap.from,
                     "originalBody": String(snap.body.prefix(3000)),
+                    "matchedLabels": snap.matchedLabels.joined(separator: ", "),
                 ]
             )
         }
