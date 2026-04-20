@@ -270,20 +270,34 @@ struct SearchResultView: View {
                         }
                     }
 
-                    // Answer text — rendered as Markdown
-                    if let md = try? AttributedString(markdown: result.answer, options: .init(interpretedSyntax: .full)) {
-                        Text(md)
-                            .font(.system(size: 14))
-                            .lineSpacing(6)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Text(result.answer)
-                            .font(.system(size: 14))
-                            .lineSpacing(6)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    // Answer text — render each line as its own Text so
+                    // explicit `\n` in the source (bullet lists, calendar
+                    // rows) actually break visually. SwiftUI's full-markdown
+                    // AttributedString parser flattens block-level structure
+                    // into one paragraph, so we parse line-by-line and apply
+                    // inline markdown per line.
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(result.answer.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                                Spacer().frame(height: 4)
+                            } else if let attr = try? AttributedString(
+                                markdown: line,
+                                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+                            ) {
+                                Text(attr)
+                                    .font(.system(size: 14))
+                                    .lineSpacing(4)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } else {
+                                Text(line)
+                                    .font(.system(size: 14))
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                     // Financial widget link (crypto / stock queries)
                     if let widgetUrl = result.widgetUrl, let url = URL(string: widgetUrl) {

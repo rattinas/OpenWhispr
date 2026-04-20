@@ -25,6 +25,7 @@ final class ShopifyConnector: Connector {
     let serviceNames: [String] = ["shopify"]
     let category: ConnectorCategory = .ecommerce
     let nangoProvider: String? = "shopify"
+    let pipedreamAppSlug: String? = "shopify_developer_app"
 
     let setupGuide: [SetupStep] = [
         SetupStep(
