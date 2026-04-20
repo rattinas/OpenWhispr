@@ -649,6 +649,35 @@ struct SearchResultView: View {
             }
             .padding(.bottom, 2)
 
+            // Read-only summary context (e.g. "Email subject — sender — one-line ask").
+            if let summary = action.summary, !summary.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(summary.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                        if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                            Spacer().frame(height: 2)
+                        } else if let attr = try? AttributedString(
+                            markdown: line,
+                            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+                        ) {
+                            Text(attr)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text(line)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(action.editable) { field in
                     VStack(alignment: .leading, spacing: 4) {
