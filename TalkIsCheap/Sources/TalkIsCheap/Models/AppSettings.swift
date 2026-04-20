@@ -76,6 +76,31 @@ final class AppSettings: ObservableObject {
     /// shown first in Settings → Services. Empty = show all evenly.
     @AppStorage("industryPack") var industryPack: String = ""
 
+    /// JSON-encoded array of Gmail label names the user explicitly
+    /// wants the triage agent to treat as "needs my reply". When
+    /// empty we fall back to keyword-auto-detection over label names
+    /// ('antwort', 'urgent', …).
+    @AppStorage("gmailTriageLabels") var gmailTriageLabels: String = ""
+
+    // Convenience getter / setter as [String].
+    var gmailTriageLabelList: [String] {
+        get {
+            guard !gmailTriageLabels.isEmpty,
+                  let data = gmailTriageLabels.data(using: .utf8),
+                  let arr = try? JSONDecoder().decode([String].self, from: data)
+            else { return [] }
+            return arr
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue),
+               let str = String(data: data, encoding: .utf8) {
+                gmailTriageLabels = str
+            } else {
+                gmailTriageLabels = ""
+            }
+        }
+    }
+
     static let languages: [(code: String, name: String)] = [
         ("auto", "Auto-Detect"),
         ("de", "Deutsch"),
