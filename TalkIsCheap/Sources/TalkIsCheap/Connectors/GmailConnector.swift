@@ -226,7 +226,7 @@ final class GmailConnector: Connector {
             ],
             timeRange: intent.timeRange,
             cachedAt: Date(),
-            pendingAction: pending
+            pendingActions: [pending]
         )
     }
 
@@ -247,9 +247,251 @@ final class GmailConnector: Connector {
         return markers.contains { q.contains($0) }
     }
 
-    // MARK: - Smart triage (Claude Haiku over a rich inbox snapshot)
+    // MARK: - Smart triage v2 — only real human replies, each its own card
 
     private func smartTriage(intent: ConnectorIntent) async throws -> ConnectorResult {
+        // 1. Know who "me" is so we can skip threads we've already answered.
+        let myEmail: String = await {
+            guard let data = try? await apiGet(path: "/gmail/v1/users/me/profile"),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return "" }
+            return (json["emailAddress"] as? String)?.lowercased() ?? ""
+        }()
+
+        // 2. Build a STRICT filter. Automated senders and system notifications
+        //    do not "need a reply" — they just drown the signal.
+        let excludedFroms = [
+            "noreply", "no-reply", "donotreply", "do-not-reply",
+            "notifications", "notification", "notify",
+            "mailer-daemon", "postmaster",
+            "calendar-notification@google.com",
+            "bounces", "reply+",
+            "newsletter", "news@", "marketing@",
+            "updates@", "alerts@", "info@",
+        ]
+        var qParts: [String] = [
+            "is:unread", "in:inbox",
+            "-category:promotions", "-category:updates",
+            "-category:forums", "-category:social",
+        ]
+        for f in excludedFroms { qParts.append("-from:\(f)") }
+        let gmailQuery = qParts.joined(separator: " ")
+        let encodedQ = gmailQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? gmailQuery
+
+        // 3. Use THREADS (not messages) so we can check the last-sender of
+        //    each conversation and skip threads where I already replied.
+        let listData = try await apiGet(path: "/gmail/v1/users/me/threads?maxResults=25&q=\(encodedQ)")
+        guard let listJson = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
+              let threadStubs = listJson["threads"] as? [[String: Any]], !threadStubs.isEmpty
+        else {
+            let isGerman = looksGerman(intent.rawQuery)
+            return ConnectorResult(
+                connectorId: id, connectorName: name, icon: icon,
+                answer: "## 📭 " + (isGerman ? "Keine dringenden Mails" : "Inbox is clear") + "\n\n" + (isGerman ? "Nichts Unbeantwortetes im Posteingang — abgesehen von automatischen Mails." : "Nothing waiting on a real reply — automated notifications filtered out."),
+                rawData: ["excluded": excludedFroms],
+                timeRange: intent.timeRange, cachedAt: Date()
+            )
+        }
+
+        // 4. For each thread: fetch full, check last sender ≠ me, keep body.
+        struct ThreadSnapshot {
+            let threadId: String
+            let messageId: String
+            let from: String
+            let fromEmail: String
+            let subject: String
+            let date: String
+            let body: String
+            let hasQuestion: Bool
+        }
+        let threadIds = threadStubs.prefix(20).compactMap { $0["id"] as? String }
+        var candidates: [ThreadSnapshot] = []
+        try await withThrowingTaskGroup(of: ThreadSnapshot?.self) { group in
+            for tid in threadIds {
+                group.addTask { [self] in
+                    guard let raw = try? await self.apiGet(path: "/gmail/v1/users/me/threads/\(tid)?format=full"),
+                          let thread = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
+                          let messages = thread["messages"] as? [[String: Any]],
+                          let last = messages.last
+                    else { return nil }
+                    let payload = last["payload"] as? [String: Any] ?? [:]
+                    let headers = (payload["headers"] as? [[String: Any]]) ?? []
+                    func header(_ name: String) -> String {
+                        headers.first { ($0["name"] as? String)?.lowercased() == name.lowercased() }?["value"] as? String ?? ""
+                    }
+                    let from = header("From")
+                    let bareEmail = self.extractBareEmail(from: from)?.lowercased() ?? ""
+                    // Skip threads I sent last — already handled from my side.
+                    if !myEmail.isEmpty, bareEmail == myEmail { return nil }
+                    // Secondary safety net against automated senders.
+                    if self.looksAutomated(from: from, email: bareEmail) { return nil }
+
+                    let body = self.extractPlainBody(payload: payload).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if body.isEmpty { return nil }
+                    let hasQuestion = body.contains("?") ||
+                        body.lowercased().contains("please") ||
+                        body.lowercased().contains("können sie") ||
+                        body.lowercased().contains("könnten sie") ||
+                        body.lowercased().contains("would you") ||
+                        body.lowercased().contains("could you") ||
+                        body.lowercased().contains("let me know")
+
+                    return ThreadSnapshot(
+                        threadId: tid,
+                        messageId: (last["id"] as? String) ?? "",
+                        from: from,
+                        fromEmail: bareEmail,
+                        subject: header("Subject"),
+                        date: header("Date"),
+                        body: body,
+                        hasQuestion: hasQuestion
+                    )
+                }
+            }
+            for try await s in group { if let s { candidates.append(s) } }
+        }
+
+        // 5. Rank: emails with a question / ask are MORE urgent than plain FYI.
+        candidates.sort { a, b in
+            if a.hasQuestion != b.hasQuestion { return a.hasQuestion && !b.hasQuestion }
+            return false
+        }
+        let topN = Array(candidates.prefix(3))
+
+        if topN.isEmpty {
+            let isGerman = looksGerman(intent.rawQuery)
+            return ConnectorResult(
+                connectorId: id, connectorName: name, icon: icon,
+                answer: "## 📭 " + (isGerman ? "Keine offenen Antworten" : "Nothing waiting for a reply") + "\n\n" + (isGerman ? "Alle Threads sind bereits beantwortet oder automatisch." : "Every unread thread is either automated or already answered by you."),
+                rawData: ["filtered": candidates.count],
+                timeRange: intent.timeRange, cachedAt: Date()
+            )
+        }
+
+        // 6. Draft a reply for each — Claude Haiku in parallel.
+        let isGerman = looksGerman(intent.rawQuery)
+        let draftSystem = """
+        You are drafting a concise reply to an email. Match the sender's \
+        language (German if the email is in German, English if English). \
+        Produce ONLY the reply body — no subject, no greeting if the \
+        original didn't use one, no 'Here's a draft:' preamble. Keep it \
+        short (2–4 sentences), polite, directly addressing any question \
+        the sender asked.
+        """
+        struct DraftedReply {
+            let snapshot: ThreadSnapshot
+            let draft: String
+        }
+        var drafts: [DraftedReply] = []
+        try await withThrowingTaskGroup(of: DraftedReply?.self) { group in
+            for snap in topN {
+                group.addTask {
+                    let prompt = """
+                    Email received:
+
+                    From: \(snap.from)
+                    Subject: \(snap.subject)
+
+                    \(snap.body.prefix(2500))
+                    """
+                    let draft = (try? await ProxyClient.polish(
+                        text: prompt,
+                        systemPrompt: draftSystem,
+                        model: "claude-haiku-4-5-20251001"
+                    )) ?? ""
+                    return DraftedReply(snapshot: snap, draft: draft)
+                }
+            }
+            for try await d in group { if let d { drafts.append(d) } }
+        }
+        // Preserve original priority order.
+        drafts.sort { a, b in
+            topN.firstIndex { $0.threadId == a.snapshot.threadId } ?? 0
+                < topN.firstIndex { $0.threadId == b.snapshot.threadId } ?? 0
+        }
+
+        // 7. Build one PendingAction per drafted reply so each email
+        //    becomes its own editable card in the UI.
+        let pendings: [PendingAction] = drafts.map { d in
+            let snap = d.snapshot
+            let subjectBase = snap.subject
+            let replySubject = subjectBase.lowercased().hasPrefix("re:") ? subjectBase : "Re: \(subjectBase)"
+            let toAddr = snap.fromEmail.isEmpty ? snap.from : snap.fromEmail
+            let fields: [EditableField] = [
+                EditableField(key: "to", label: isGerman ? "An" : "To", multiline: false, value: toAddr),
+                EditableField(key: "subject", label: isGerman ? "Betreff" : "Subject", multiline: false, value: replySubject),
+                EditableField(key: "body", label: isGerman ? "Nachricht" : "Message", multiline: true, value: d.draft),
+            ]
+            return PendingAction(
+                kind: "gmail.send",
+                title: isGerman ? "Antwort senden an \(cleanFrom(snap.from))" : "Reply to \(cleanFrom(snap.from))",
+                appSlug: "gmail",
+                endpoint: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                method: "POST",
+                editable: fields,
+                hidden: [
+                    "threadId": snap.threadId,
+                    "originalSubject": snap.subject,
+                    "originalFrom": snap.from,
+                    "originalBody": String(snap.body.prefix(3000)),
+                ]
+            )
+        }
+
+        // 8. Short header — the cards do the rest.
+        let headline: String
+        if isGerman {
+            headline = drafts.count == 1
+                ? "📬 1 Mail wartet auf deine Antwort"
+                : "📬 \(drafts.count) Mails warten auf deine Antwort"
+        } else {
+            headline = drafts.count == 1
+                ? "📬 1 email waiting for your reply"
+                : "📬 \(drafts.count) emails waiting for your reply"
+        }
+        var md = "## \(headline)\n\n"
+        md += isGerman
+            ? "Unten siehst du für jede einen editierbaren Antwort-Entwurf. Tweake den Text und klick **Antwort senden**."
+            : "A draft reply is prepared for each — tweak the text and hit **Send reply**."
+
+        // Context for follow-up chat ("mach die zweite kürzer", etc.).
+        let ctx: [String: Any] = [
+            "drafts": drafts.map { d in
+                [
+                    "from": d.snapshot.from,
+                    "subject": d.snapshot.subject,
+                    "date": d.snapshot.date,
+                    "body": d.snapshot.body,
+                    "draft": d.draft,
+                ]
+            }
+        ]
+
+        return ConnectorResult(
+            connectorId: id, connectorName: name, icon: icon,
+            answer: md,
+            rawData: ctx,
+            timeRange: intent.timeRange,
+            cachedAt: Date(),
+            pendingActions: pendings
+        )
+    }
+
+    nonisolated private func looksAutomated(from raw: String, email: String) -> Bool {
+        let sig = (raw + " " + email).lowercased()
+        let markers = [
+            "noreply", "no-reply", "donotreply", "do-not-reply",
+            "notifications@", "notification@", "notify@",
+            "mailer-daemon", "postmaster", "bounces",
+            "automated", "auto-reply", "no reply",
+        ]
+        return markers.contains { sig.contains($0) }
+    }
+
+    // Keep the old smartTriage signature as a no-op to avoid breaking
+    // callers that imported it — just forwards to the new impl.
+    @MainActor
+    private func smartTriageLegacy(intent: ConnectorIntent) async throws -> ConnectorResult {
         // Fetch user's labels first so we can flag "needs answer"-style
         // ones that the user has defined themselves.
         let labelData = try await apiGet(path: "/gmail/v1/users/me/labels")

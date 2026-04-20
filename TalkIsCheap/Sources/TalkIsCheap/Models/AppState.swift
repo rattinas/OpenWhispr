@@ -603,7 +603,8 @@ final class AppState: ObservableObject {
                             connectorId: result.connectorId,
                             connectorName: result.connectorName,
                             connectorIcon: result.icon,
-                            followUpContext: ctxData
+                            followUpContext: ctxData,
+                            pendingActions: result.pendingActions
                         ))
                         SoundFeedback.done()
                         status = .ready
