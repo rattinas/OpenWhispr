@@ -37,6 +37,22 @@ struct PendingAction: Identifiable, Hashable {
     /// Fields baked into the payload but not surfaced to the user
     /// (threadId, startISO, timezone, …). `key → string-value`.
     let hidden: [String: String]
+    /// Optional read-only context block shown above the editable fields
+    /// — e.g. a one-line summary of the email being replied to.
+    let summary: String?
+
+    init(kind: String, title: String, appSlug: String, endpoint: String,
+         method: String, editable: [EditableField], hidden: [String: String],
+         summary: String? = nil) {
+        self.kind = kind
+        self.title = title
+        self.appSlug = appSlug
+        self.endpoint = endpoint
+        self.method = method
+        self.editable = editable
+        self.hidden = hidden
+        self.summary = summary
+    }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
     static func == (lhs: PendingAction, rhs: PendingAction) -> Bool { lhs.id == rhs.id }

@@ -374,6 +374,19 @@ final class GmailConnector: Connector {
                     if !myEmail.isEmpty, bareEmail == myEmail { return nil }
                     if self.looksAutomated(from: from, email: bareEmail) { return nil }
 
+                    // Header-based bulk / notification detection. Every
+                    // well-behaved newsletter / system mail carries one of
+                    // these — they're the clearest "do not reply" signal
+                    // the internet has.
+                    let listUnsubscribe = header("List-Unsubscribe")
+                    let autoSubmitted = header("Auto-Submitted")
+                    let precedence = header("Precedence").lowercased()
+                    let xAutoResponse = header("X-Auto-Response-Suppress")
+                    if !listUnsubscribe.isEmpty { return nil }
+                    if !autoSubmitted.isEmpty, autoSubmitted.lowercased() != "no" { return nil }
+                    if ["bulk", "list", "junk"].contains(precedence) { return nil }
+                    if !xAutoResponse.isEmpty { return nil }
+
                     let body = self.extractPlainBody(payload: payload).trimmingCharacters(in: .whitespacesAndNewlines)
                     if body.isEmpty { return nil }
 
@@ -428,18 +441,25 @@ final class GmailConnector: Connector {
             )
         }
 
-        // 6. Draft a reply for each — Claude Haiku in parallel.
+        // 6. For each: one Claude Haiku call returning BOTH a one-line
+        //    summary of what the sender is asking + a drafted reply.
+        //    Single round-trip keeps latency < 2s total even with 3 emails.
         let isGerman = looksGerman(intent.rawQuery)
         let draftSystem = """
-        You are drafting a concise reply to an email. Match the sender's \
-        language (German if the email is in German, English if English). \
-        Produce ONLY the reply body — no subject, no greeting if the \
-        original didn't use one, no 'Here's a draft:' preamble. Keep it \
-        short (2–4 sentences), polite, directly addressing any question \
-        the sender asked.
+        You process an incoming email. Return ONLY strict JSON:
+        {
+          "summary": string,  // ONE sentence: what the sender is asking
+                              // / needs / wants. Match their language.
+          "draft": string     // reply body only — no subject, no
+                              // 'Here is a draft:' preamble, no
+                              // greeting unless the original had one.
+                              // Keep it 2–4 sentences, polite, directly
+                              // addressing any question. Same language.
+        }
         """
         struct DraftedReply {
             let snapshot: ThreadSnapshot
+            let summary: String
             let draft: String
         }
         var drafts: [DraftedReply] = []
@@ -454,17 +474,29 @@ final class GmailConnector: Connector {
 
                     \(snap.body.prefix(2500))
                     """
-                    let draft = (try? await ProxyClient.polish(
+                    let raw = (try? await ProxyClient.polish(
                         text: prompt,
                         systemPrompt: draftSystem,
                         model: "claude-haiku-4-5-20251001"
                     )) ?? ""
-                    return DraftedReply(snapshot: snap, draft: draft)
+                    let cleaned = raw
+                        .replacingOccurrences(of: "```json", with: "")
+                        .replacingOccurrences(of: "```", with: "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    var summary = ""
+                    var draft = ""
+                    if let data = cleaned.data(using: .utf8),
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        summary = (json["summary"] as? String) ?? ""
+                        draft = (json["draft"] as? String) ?? ""
+                    }
+                    // Graceful fallback if Claude didn't return JSON.
+                    if draft.isEmpty { draft = cleaned }
+                    return DraftedReply(snapshot: snap, summary: summary, draft: draft)
                 }
             }
             for try await d in group { if let d { drafts.append(d) } }
         }
-        // Preserve original priority order.
         drafts.sort { a, b in
             topN.firstIndex { $0.threadId == a.snapshot.threadId } ?? 0
                 < topN.firstIndex { $0.threadId == b.snapshot.threadId } ?? 0
@@ -490,6 +522,16 @@ final class GmailConnector: Connector {
             } else {
                 fullTitle = baseTitle
             }
+            // Compose the read-only summary shown at the top of the card.
+            // Keeps the "what are you replying to" context visible without
+            // the user having to click through.
+            let dateStr = snap.date.isEmpty ? "" : " · \(snap.date)"
+            let summary = """
+            **\(snap.subject)**  —  \(self.cleanFrom(snap.from))\(dateStr)
+
+            \(d.summary.isEmpty ? String(snap.body.prefix(240)) : d.summary)
+            """
+
             return PendingAction(
                 kind: "gmail.send",
                 title: fullTitle,
@@ -503,7 +545,8 @@ final class GmailConnector: Connector {
                     "originalFrom": snap.from,
                     "originalBody": String(snap.body.prefix(3000)),
                     "matchedLabels": snap.matchedLabels.joined(separator: ", "),
-                ]
+                ],
+                summary: summary
             )
         }
 
