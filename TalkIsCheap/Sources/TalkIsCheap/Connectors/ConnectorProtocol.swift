@@ -96,6 +96,9 @@ struct ConnectorResult {
     let rawData: [String: Any]
     let timeRange: TimeRange
     let cachedAt: Date
+    /// Non-nil when the connector prepared a write action (send email,
+    /// create event, …) that shouldn't execute without the user's OK.
+    var pendingAction: PendingAction? = nil
 }
 
 // MARK: - Category (Modes)
