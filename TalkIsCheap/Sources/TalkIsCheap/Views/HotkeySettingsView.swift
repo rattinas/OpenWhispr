@@ -15,6 +15,17 @@ struct HotkeySettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // "How it works" card — lives here rather than in docs so users see
+            // the exact gestures they have configured without leaving Settings.
+            Section {
+                howItWorksCard
+            } header: {
+                HStack(spacing: 6) {
+                    Image(systemName: "questionmark.circle")
+                    Text("How it works")
+                }
+            }
+
             if let msg = conflictMessage {
                 Section {
                     Label(msg, systemImage: "exclamationmark.triangle.fill")
@@ -40,6 +51,115 @@ struct HotkeySettingsView: View {
             HotkeyCalibrationSheet(mode: mode) {
                 detectConflicts()
             }
+        }
+    }
+
+    // MARK: - "How it works" card
+
+    /// Live tutorial that reads the user's actual patterns and describes the
+    /// flow step by step for each mode. This is the primary place we teach
+    /// customers the double-tap / combo / hands-free toggle semantics — the
+    /// old app had no explanation of Command Mode anywhere in-product.
+    @ViewBuilder
+    private var howItWorksCard: some View {
+        let rec = settings.recordPattern
+        let srch = settings.searchPattern
+        let hf = settings.handsFreePattern
+
+        VStack(alignment: .leading, spacing: 14) {
+            if rec.enabled {
+                usageStep(
+                    icon: "mic.fill",
+                    title: "Record (dictate into anything)",
+                    steps: [
+                        "**Hold** \(rec.kind.descriptionWith(primary: rec.key)) and start speaking.",
+                        "**Release** — your text is polished by Claude Haiku and pasted at the cursor.",
+                    ],
+                    footnote: "Short taps are ignored — only real holds trigger dictation.",
+                )
+            }
+
+            if srch.enabled {
+                usageStep(
+                    icon: "sparkle.magnifyingglass",
+                    title: "Command Mode (voice search + connected tools)",
+                    steps: [
+                        "Do \(srch.kind.descriptionWith(primary: srch.key)). The search panel opens.",
+                        "**Speak your question.** (\"Wie viel Umsatz hatten wir gestern?\", \"freier Termin morgen?\", \"letzte Mail von Chris?\")",
+                        "**Press \(srch.key.glyph) \(srch.key.label) once** to submit. Answer streams in; follow-ups work inline.",
+                    ],
+                    footnote: "Connected services (Gmail, Calendar, Shopify) answer from live data. Crypto / stocks / weather work offline via public APIs.",
+                )
+            }
+
+            if hf.enabled {
+                usageStep(
+                    icon: "hands.sparkles.fill",
+                    title: "Hands-Free (long dictation — walk & talk)",
+                    steps: [
+                        "Do \(hf.kind.descriptionWith(primary: hf.key)) **briefly**.",
+                        "**Release** everything — recording keeps running. Speak for as long as you want, no keys held.",
+                        "**Press \(hf.key.glyph) \(hf.key.label) once** to stop and paste.",
+                    ],
+                    footnote: "Unlike Record, Hands-Free is a toggle — activate once, come back when you're done."
+                )
+            }
+
+            // Personalised rhythm tip — only surfaced when the user hasn't
+            // calibrated yet AND has at least one .taps pattern configured.
+            let uncalibratedTaps = TriggerMode.allCases.contains { mode in
+                let p = settings.pattern(for: mode)
+                if case .taps = p.kind, p.calibrationSampleCount == 0, p.enabled {
+                    return true
+                }
+                return false
+            }
+            if uncalibratedTaps {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "waveform.path.ecg")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Your tap rhythm isn't calibrated yet")
+                            .font(.caption.bold())
+                        Text("Hit **Train my rhythm** on any tap-based mode below — TalkIsCheap will learn exactly how fast you double-tap and match you every time.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func usageStep(icon: String, title: String, steps: [String], footnote: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.primary)
+                Text(title)
+                    .font(.caption.bold())
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(steps.enumerated()), id: \.offset) { idx, step in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("\(idx + 1).")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Text(try! AttributedString(markdown: step))
+                            .font(.caption)
+                    }
+                }
+            }
+            .padding(.leading, 22)
+            Text(footnote)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.leading, 22)
         }
     }
 
