@@ -81,38 +81,120 @@ final class GoogleCalendarConnector: Connector {
             throw ConnectorError.parseError("Unexpected Google Calendar response")
         }
 
-        let displayFormat = DateFormatter()
-        displayFormat.dateStyle = .short
-        displayFormat.timeStyle = .short
-        let dayOnly = DateFormatter()
-        dayOnly.dateStyle = .short
-
-        var lines: [String] = []
-        for event in items.prefix(10) {
-            let summary = event["summary"] as? String ?? "(no title)"
-            let start = (event["start"] as? [String: Any])
-            let startStr: String
-            if let dt = start?["dateTime"] as? String,
-               let d = isoFormatter.date(from: dt) {
-                startStr = displayFormat.string(from: d)
-            } else if let d = start?["date"] as? String {
-                startStr = d
-            } else {
-                startStr = "?"
-            }
-            var location = ""
-            if let l = event["location"] as? String, !l.isEmpty { location = " · \(l)" }
-            lines.append("- **\(summary)** — \(startStr)\(location)")
-        }
-
         let heading = range.displayName.prefix(1).uppercased() + range.displayName.dropFirst()
-        var md = "## Calendar — \(heading)\n\n"
-        if lines.isEmpty {
-            md += "_Nothing scheduled in this window._"
-        } else {
-            md += "**\(items.count) event\(items.count == 1 ? "" : "s")**\n\n"
-            md += lines.joined(separator: "\n")
+
+        // Parse all events up front so we can group and format nicely.
+        struct ParsedEvent {
+            let title: String
+            let start: Date?
+            let end: Date?
+            let isAllDay: Bool
+            let location: String?
+            let isOnline: Bool
+            let attendeeCount: Int
         }
+
+        let parsed: [ParsedEvent] = items.compactMap { raw in
+            let title = (raw["summary"] as? String)?.trimmingCharacters(in: .whitespaces).nonEmpty ?? "Untitled"
+            let startObj = raw["start"] as? [String: Any] ?? [:]
+            let endObj = raw["end"] as? [String: Any] ?? [:]
+            let startDt: Date? = (startObj["dateTime"] as? String).flatMap(isoFormatter.date)
+            let endDt: Date? = (endObj["dateTime"] as? String).flatMap(isoFormatter.date)
+            let isAllDay = startObj["date"] != nil && startObj["dateTime"] == nil
+            let loc = (raw["location"] as? String)?.trimmingCharacters(in: .whitespaces)
+            let hangoutLink = (raw["hangoutLink"] as? String) ?? ""
+            let conferenceData = raw["conferenceData"] != nil
+            let isOnline = !hangoutLink.isEmpty || conferenceData ||
+                (loc?.lowercased().contains("zoom") == true) ||
+                (loc?.lowercased().contains("meet.google") == true) ||
+                (loc?.lowercased().contains("teams.microsoft") == true)
+            let attendees = (raw["attendees"] as? [[String: Any]])?.count ?? 0
+            return ParsedEvent(
+                title: title,
+                start: startDt,
+                end: endDt,
+                isAllDay: isAllDay,
+                location: (loc?.isEmpty ?? true) ? nil : loc,
+                isOnline: isOnline,
+                attendeeCount: attendees
+            )
+        }
+
+        if parsed.isEmpty {
+            return ConnectorResult(
+                connectorId: id, connectorName: name, icon: icon,
+                answer: "## 📅 Calendar — \(heading)\n\n_Nothing scheduled._",
+                rawData: json, timeRange: range, cachedAt: Date()
+            )
+        }
+
+        let timeOnly = DateFormatter()
+        timeOnly.dateFormat = "HH:mm"
+        let timeWithDay = DateFormatter()
+        timeWithDay.dateFormat = "EEE HH:mm"  // Mon 14:30
+        timeWithDay.locale = Locale.autoupdatingCurrent
+        let dateShort = DateFormatter()
+        dateShort.dateFormat = "EEE d MMM"    // Mon 21 Apr
+        dateShort.locale = Locale.autoupdatingCurrent
+
+        let cal = Calendar.current
+        let todayRange = cal.startOfDay(for: now)...cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
+
+        // Is everything in today? Then we only need HH:mm. Otherwise day prefix.
+        let allToday = parsed.allSatisfy { ($0.start.map { todayRange.contains($0) } ?? false) }
+
+        // Identify which event is "next up" so we can highlight it.
+        let nextIndex = parsed.firstIndex(where: { ($0.start ?? .distantPast) >= now })
+
+        // Build rows.
+        var rows: [String] = []
+        for (i, e) in parsed.enumerated() {
+            let timeLabel: String
+            if let start = e.start {
+                let startStr = allToday ? timeOnly.string(from: start) : timeWithDay.string(from: start)
+                let endStr = e.end.map(timeOnly.string(from:))
+                timeLabel = endStr.map { "\(startStr)–\($0)" } ?? startStr
+            } else if e.isAllDay {
+                timeLabel = "all-day"
+            } else {
+                timeLabel = "—"
+            }
+
+            var pieces: [String] = []
+            if e.isOnline { pieces.append("📹") }
+            if e.attendeeCount > 0 { pieces.append("👥 \(e.attendeeCount)") }
+            if let loc = e.location, !e.isOnline { pieces.append("📍 \(loc)") }
+            let meta = pieces.isEmpty ? "" : "  \(pieces.joined(separator: " · "))"
+
+            let prefix = (i == nextIndex) ? "▶︎ **NEXT** " : "• "
+            rows.append("\(prefix)`\(timeLabel)` **\(e.title)**\(meta)")
+        }
+
+        // Summarise day at the top.
+        let todayLabel: String = {
+            if allToday {
+                let df = DateFormatter(); df.dateStyle = .full
+                return df.string(from: now)
+            }
+            return heading
+        }()
+
+        var md = "## 📅 \(todayLabel)\n\n"
+        md += "**\(parsed.count) event\(parsed.count == 1 ? "" : "s")**"
+        if let nxt = nextIndex, let start = parsed[nxt].start {
+            let mins = Int(start.timeIntervalSince(now) / 60)
+            if mins > 0 {
+                if mins < 60 {
+                    md += " · next in \(mins) min"
+                } else {
+                    md += " · next at \(timeOnly.string(from: start))"
+                }
+            } else {
+                md += " · happening now"
+            }
+        }
+        md += "\n\n"
+        md += rows.joined(separator: "\n")
 
         return ConnectorResult(
             connectorId: id,
@@ -124,4 +206,8 @@ final class GoogleCalendarConnector: Connector {
             cachedAt: Date()
         )
     }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }
