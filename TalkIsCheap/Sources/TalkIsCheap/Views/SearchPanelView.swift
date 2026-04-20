@@ -169,6 +169,134 @@ final class SearchPanelManager: ObservableObject {
         NSPasteboard.general.setString(turn.text, forType: .string)
     }
 
+    // MARK: - Confirm a pending agent action
+
+    @Published var isExecutingAction = false
+
+    /// Actually execute the agent-prepared write action using the current
+    /// (possibly user-edited) field values. Replaces the result with a
+    /// success confirmation or surfaces an error in the chat.
+    func confirmPending(_ action: PendingAction, editedValues: [String: String]) async {
+        isExecutingAction = true
+        defer { isExecutingAction = false }
+
+        // Assemble the upstream payload from the edited fields + hidden fields.
+        let payload: [String: Any]
+        switch action.kind {
+        case "gmail.send":
+            let to = editedValues["to"] ?? ""
+            let subject = editedValues["subject"] ?? ""
+            let body = editedValues["body"] ?? ""
+            let threadId = action.hidden["threadId"] ?? ""
+            var mime = "To: \(to)\r\n"
+            mime += "Subject: \(subject)\r\n"
+            mime += "Content-Type: text/plain; charset=UTF-8\r\n\r\n"
+            mime += body
+            let raw = Data(mime.utf8).base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+            var p: [String: Any] = ["raw": raw]
+            if !threadId.isEmpty { p["threadId"] = threadId }
+            payload = p
+
+        case "calendar.create":
+            let summary = editedValues["summary"] ?? ""
+            let location = editedValues["location"] ?? ""
+            let description = editedValues["description"] ?? ""
+            let tz = action.hidden["timezone"] ?? TimeZone.current.identifier
+            let startISO = action.hidden["startISO"] ?? ""
+            let endISO = action.hidden["endISO"] ?? ""
+            var p: [String: Any] = [
+                "summary": summary,
+                "start": ["dateTime": startISO, "timeZone": tz],
+                "end":   ["dateTime": endISO,   "timeZone": tz],
+            ]
+            if !location.isEmpty { p["location"] = location }
+            if !description.isEmpty { p["description"] = description }
+            if let csv = editedValues["attendeesCsv"]?
+                .split(separator: ",")
+                .map({ $0.trimmingCharacters(in: .whitespaces) })
+                .filter({ !$0.isEmpty && $0.contains("@") }),
+               !csv.isEmpty {
+                p["attendees"] = csv.map { ["email": $0] }
+            }
+            payload = p
+
+        default:
+            conversation.append(ChatTurn(role: .assistant,
+                text: "⚠️ Unknown action kind: \(action.kind)"))
+            return
+        }
+
+        // Look up the Pipedream account for the app slug.
+        await PipedreamCatalog.shared.ensureAccountsLoaded()
+        guard let account = PipedreamCatalog.shared.account(forApp: action.appSlug) else {
+            conversation.append(ChatTurn(role: .assistant,
+                text: "⚠️ \(action.appSlug) isn't connected."))
+            return
+        }
+
+        do {
+            let data = try await PipedreamClient.shared.proxy(
+                accountId: account.id,
+                url: action.endpoint,
+                method: action.method,
+                body: payload
+            )
+            let respJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            if let err = respJson?["error"] as? [String: Any],
+               let msg = err["message"] as? String {
+                conversation.append(ChatTurn(role: .assistant, text: "⚠️ \(msg)"))
+                return
+            }
+
+            // Build a success answer + replace the result so the confirm
+            // UI disappears.
+            let successMd = buildSuccessConfirmation(action: action, response: respJson)
+            if case .result(let base) = state {
+                let updated = SearchResult(
+                    query: base.query,
+                    answer: successMd,
+                    sources: base.sources,
+                    images: base.images,
+                    widgetUrl: base.widgetUrl,
+                    connectorId: base.connectorId,
+                    connectorName: base.connectorName,
+                    connectorIcon: base.connectorIcon,
+                    followUpContext: base.followUpContext,
+                    pendingAction: nil
+                )
+                state = .result(updated)
+                lastResult = updated
+            }
+        } catch {
+            conversation.append(ChatTurn(role: .assistant,
+                text: "⚠️ Couldn't execute: \(error.localizedDescription)"))
+        }
+    }
+
+    private func buildSuccessConfirmation(action: PendingAction, response: [String: Any]?) -> String {
+        switch action.kind {
+        case "gmail.send":
+            let sentId = response?["id"] as? String ?? ""
+            var md = "## ✅ E-Mail gesendet\n\n"
+            if !sentId.isEmpty {
+                md += "[In Gmail öffnen](https://mail.google.com/mail/u/0/#sent/\(sentId))"
+            }
+            return md
+        case "calendar.create":
+            let htmlLink = response?["htmlLink"] as? String ?? ""
+            var md = "## ✅ Termin erstellt\n\n"
+            if !htmlLink.isEmpty {
+                md += "[Im Kalender öffnen](\(htmlLink))"
+            }
+            return md
+        default:
+            return "## ✅ Done"
+        }
+    }
+
     private func centerOnScreen() {
         guard let screen = NSScreen.main else { return }
         let f = screen.visibleFrame
@@ -425,6 +553,11 @@ struct SearchResultView: View {
                         }
                     }
 
+                    // Pending agent action: editable preview + Confirm / Cancel
+                    if let pending = result.pendingAction {
+                        pendingActionCard(pending)
+                    }
+
                     // Chat / follow-up conversation
                     if !manager.conversation.isEmpty {
                         Divider()
@@ -477,6 +610,91 @@ struct SearchResultView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
         }
+    }
+
+    // MARK: - Pending-action (editable) card
+
+    @State private var editedFields: [UUID: String] = [:]
+
+    @ViewBuilder
+    private func pendingActionCard(_ action: PendingAction) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: action.kind.hasPrefix("gmail") ? "envelope.fill" : "calendar.badge.plus")
+                    .foregroundStyle(.blue)
+                Text(action.title)
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+            }
+            .padding(.bottom, 2)
+
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(action.editable) { field in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(field.label)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        if field.multiline {
+                            TextEditor(text: Binding(
+                                get: { editedFields[field.id] ?? field.value },
+                                set: { editedFields[field.id] = $0 }
+                            ))
+                            .font(.system(size: 13))
+                            .frame(minHeight: 80, idealHeight: 120)
+                            .padding(6)
+                            .background(Color.secondary.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        } else {
+                            TextField(field.label, text: Binding(
+                                get: { editedFields[field.id] ?? field.value },
+                                set: { editedFields[field.id] = $0 }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 13))
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Button(role: .cancel) {
+                    // Dismiss the pending action by clearing the panel.
+                    manager.hide()
+                } label: {
+                    Text(action.kind.contains(".send") ? "Verwerfen" : "Verwerfen")
+                        .font(.system(size: 13))
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button {
+                    // Merge edited values + unedited initial values.
+                    var values: [String: String] = [:]
+                    for field in action.editable {
+                        values[field.key] = editedFields[field.id] ?? field.value
+                    }
+                    Task { await manager.confirmPending(action, editedValues: values) }
+                } label: {
+                    HStack(spacing: 6) {
+                        if manager.isExecutingAction { ProgressView().scaleEffect(0.6) }
+                        Image(systemName: action.kind.hasPrefix("gmail") ? "paperplane.fill" : "calendar.badge.checkmark")
+                        Text(manager.isExecutingAction ? "…" : action.title)
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(manager.isExecutingAction)
+            }
+        }
+        .padding(14)
+        .background(Color.blue.opacity(0.06))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.blue.opacity(0.25), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: - Chat UI helpers

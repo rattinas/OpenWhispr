@@ -6,6 +6,42 @@ struct SearchSource {
     let thumbnail: String? // image URL if available
 }
 
+/// A single field the user can review and edit before the agent action
+/// executes (e.g. email body, event title).
+struct EditableField: Identifiable, Hashable {
+    let id = UUID()
+    let key: String       // "to", "subject", "body", "summary", …
+    let label: String     // localised
+    let multiline: Bool
+    var value: String
+}
+
+/// A prepared write action an agent has composed but not yet executed.
+/// The SearchPanel renders these with editable fields + Confirm/Cancel
+/// so the user reviews and can tweak the payload before we hit the
+/// upstream API.
+struct PendingAction: Identifiable, Hashable {
+    let id = UUID()
+    /// Stable kind used for payload assembly, e.g. "gmail.send",
+    /// "calendar.create".
+    let kind: String
+    /// Short human title shown above the confirm buttons.
+    let title: String
+    /// Pipedream app slug used to find the connected account.
+    let appSlug: String
+    /// Upstream URL the body will be POSTed to.
+    let endpoint: String
+    let method: String
+    /// Fields rendered in the UI — user can tweak the values before confirm.
+    var editable: [EditableField]
+    /// Fields baked into the payload but not surfaced to the user
+    /// (threadId, startISO, timezone, …). `key → string-value`.
+    let hidden: [String: String]
+
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    static func == (lhs: PendingAction, rhs: PendingAction) -> Bool { lhs.id == rhs.id }
+}
+
 struct SearchResult {
     let query: String
     let answer: String
@@ -20,10 +56,14 @@ struct SearchResult {
     /// follow-up chat can reason over the original data without another
     /// API round-trip. Not displayed.
     let followUpContext: String?
+    /// Set by agent-style connectors (Gmail send, Calendar create) that
+    /// prepared a write action but won't execute until the user confirms.
+    let pendingAction: PendingAction?
 
     init(query: String, answer: String, sources: [SearchSource], images: [String],
          widgetUrl: String?, connectorId: String? = nil, connectorName: String? = nil,
-         connectorIcon: String? = nil, followUpContext: String? = nil) {
+         connectorIcon: String? = nil, followUpContext: String? = nil,
+         pendingAction: PendingAction? = nil) {
         self.query = query
         self.answer = answer
         self.sources = sources
@@ -33,6 +73,7 @@ struct SearchResult {
         self.connectorName = connectorName
         self.connectorIcon = connectorIcon
         self.followUpContext = followUpContext
+        self.pendingAction = pendingAction
     }
 }
 

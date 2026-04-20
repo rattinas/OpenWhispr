@@ -190,56 +190,43 @@ final class GmailConnector: Connector {
             )
         }
 
-        // Build RFC 2822 MIME text and base64url encode for Gmail API.
-        var mime = ""
-        mime += "To: \(to)\r\n"
-        mime += "Subject: \(subject)\r\n"
-        mime += "Content-Type: text/plain; charset=UTF-8\r\n"
-        mime += "\r\n"
-        mime += body
-        let raw = Data(mime.utf8).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-
-        var sendBody: [String: Any] = ["raw": raw]
-        if let tid = parsed["threadId"] as? String, !tid.isEmpty {
-            sendBody["threadId"] = tid
-        }
-
-        let sentData = try await pipedreamProxy(
-            url: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-            method: "POST",
-            body: sendBody
-        )
-        guard let sentJson = try? JSONSerialization.jsonObject(with: sentData) as? [String: Any] else {
-            throw ConnectorError.parseError("Send response unparseable")
-        }
-        if let err = sentJson["error"] as? [String: Any],
-           let msg = err["message"] as? String {
-            throw ConnectorError.apiError("Gmail: \(msg)")
-        }
-
+        // Draft the action for the user to confirm + edit. Don't hit
+        // Gmail yet — SearchPanelManager.confirmPending will re-assemble
+        // the MIME from the final (possibly edited) field values.
         let isGerman = looksGerman(intent.rawQuery)
-        let sentId = sentJson["id"] as? String ?? ""
-        var md = "## ✅ \(isGerman ? "E-Mail gesendet" : "Email sent")\n\n"
-        md += "**An:** \(to)\n"
-        md += "**\(isGerman ? "Betreff" : "Subject"):** \(subject)\n\n"
-        md += body
-        if !sentId.isEmpty {
-            md += "\n\n[\(isGerman ? "In Gmail öffnen" : "Open in Gmail")](https://mail.google.com/mail/u/0/#sent/\(sentId))"
+        var md = "## ✉️ \(isGerman ? "E-Mail bereit zum Senden" : "Email ready to send")\n\n"
+        md += "*\(isGerman ? "Passe die Felder unten an, dann Senden klicken." : "Adjust the fields below, then click Send.")*"
+
+        let fields: [EditableField] = [
+            EditableField(key: "to", label: isGerman ? "An" : "To", multiline: false, value: to),
+            EditableField(key: "subject", label: isGerman ? "Betreff" : "Subject", multiline: false, value: subject),
+            EditableField(key: "body", label: isGerman ? "Nachricht" : "Message", multiline: true, value: body),
+        ]
+        var hidden: [String: String] = [:]
+        if let tid = parsed["threadId"] as? String, !tid.isEmpty {
+            hidden["threadId"] = tid
         }
+
+        let pending = PendingAction(
+            kind: "gmail.send",
+            title: isGerman ? "E-Mail senden" : "Send email",
+            appSlug: "gmail",
+            endpoint: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+            method: "POST",
+            editable: fields,
+            hidden: hidden
+        )
 
         return ConnectorResult(
             connectorId: id, connectorName: name, icon: icon,
             answer: md,
             rawData: [
-                "sentId": sentId,
                 "to": to, "subject": subject, "body": body,
                 "threadId": (parsed["threadId"] as? String) ?? "",
             ],
             timeRange: intent.timeRange,
-            cachedAt: Date()
+            cachedAt: Date(),
+            pendingAction: pending
         )
     }
 

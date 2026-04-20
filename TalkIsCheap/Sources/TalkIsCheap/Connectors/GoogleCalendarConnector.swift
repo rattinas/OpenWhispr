@@ -126,28 +126,7 @@ final class GoogleCalendarConnector: Connector {
             body["attendees"] = emails.map { ["email": $0] }
         }
 
-        let data2 = try await pipedreamProxy(
-            url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
-            method: "POST",
-            body: body
-        )
-
-        guard let eventJson = try? JSONSerialization.jsonObject(with: data2) as? [String: Any]
-        else {
-            throw ConnectorError.parseError("Create event response unparseable")
-        }
-
-        if let err = eventJson["error"] as? [String: Any] {
-            let msg = (err["message"] as? String) ?? "Unknown error"
-            throw ConnectorError.apiError("Google Calendar: \(msg)")
-        }
-
-        // Nice confirmation in the user's implied language — pick German
-        // if the query sounded German, else English.
         let isGerman = looksGerman(intent.rawQuery)
-        let eventId = eventJson["id"] as? String ?? ""
-        let htmlLink = eventJson["htmlLink"] as? String ?? ""
-
         let display = ISO8601DateFormatter()
         display.formatOptions = [.withInternetDateTime]
         let start = display.date(from: startISO)
@@ -157,29 +136,53 @@ final class GoogleCalendarConnector: Connector {
         fmt.timeStyle = .short
         let prettyStart = start.map(fmt.string(from:)) ?? startISO
 
-        var md = "## ✅ \(isGerman ? "Termin erstellt" : "Event created")\n\n"
-        md += "**\(summary)**\n"
-        md += "🕐 \(prettyStart)\n"
-        if let loc = parsed["location"] as? String, !loc.isEmpty { md += "📍 \(loc)\n" }
-        if let desc = parsed["description"] as? String, !desc.isEmpty {
-            md += "\n\(desc)\n"
+        var md = "## 📅 \(isGerman ? "Termin bereit zum Anlegen" : "Event ready to create")\n\n"
+        md += "🕐 \(prettyStart)\n\n"
+        md += "*\(isGerman ? "Passe die Felder an, dann Termin anlegen klicken." : "Adjust the fields below, then click Create event.")*"
+
+        var fields: [EditableField] = [
+            EditableField(key: "summary", label: isGerman ? "Titel" : "Title", multiline: false, value: summary),
+            EditableField(key: "location", label: isGerman ? "Ort" : "Location", multiline: false,
+                          value: (parsed["location"] as? String) ?? ""),
+            EditableField(key: "description", label: isGerman ? "Beschreibung" : "Description", multiline: true,
+                          value: (parsed["description"] as? String) ?? ""),
+        ]
+        // Show a read-only-ish "Attendees" field for quick edit too.
+        if let emails = parsed["attendeesEmails"] as? [String], !emails.isEmpty {
+            fields.append(EditableField(
+                key: "attendeesCsv",
+                label: isGerman ? "Teilnehmer (Komma-getrennt)" : "Attendees (comma-separated)",
+                multiline: false, value: emails.joined(separator: ", ")
+            ))
         }
-        if !htmlLink.isEmpty {
-            md += "\n[\(isGerman ? "Im Kalender öffnen" : "Open in Calendar")](\(htmlLink))"
-        }
+
+        let hidden: [String: String] = [
+            "startISO": startISO,
+            "endISO": endISO,
+            "timezone": tz,
+        ]
+
+        let pending = PendingAction(
+            kind: "calendar.create",
+            title: isGerman ? "Termin anlegen" : "Create event",
+            appSlug: "google_calendar",
+            endpoint: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+            method: "POST",
+            editable: fields,
+            hidden: hidden
+        )
 
         return ConnectorResult(
             connectorId: id, connectorName: name, icon: icon,
             answer: md,
             rawData: [
-                "eventId": eventId,
-                "htmlLink": htmlLink,
                 "summary": summary,
                 "startISO": startISO,
                 "endISO": endISO,
             ],
             timeRange: intent.timeRange,
-            cachedAt: Date()
+            cachedAt: Date(),
+            pendingAction: pending
         )
     }
 
