@@ -563,6 +563,17 @@ final class AppState: ObservableObject {
                 return
             }
 
+            // 2a. Built-in fast commands: crypto / stocks / ETFs / weather —
+            //     free public APIs with no auth, sub-second answers. Runs
+            //     first so "Bitcoin price?" doesn't get delegated to Brave
+            //     and come back as "I don't have real-time data".
+            if let instant = await BuiltInCommands.tryHandle(query: query) {
+                SearchPanelManager.shared.showResult(instant)
+                SoundFeedback.done()
+                status = .ready
+                return
+            }
+
             // 2. Command Mode: route to a connected service when possible.
             //    This runs BEFORE the streaming web-search path — otherwise
             //    queries like "was steht in meinem Kalender" would go
