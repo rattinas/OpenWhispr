@@ -77,6 +77,52 @@ final class PipedreamCatalog: ObservableObject {
         account(forApp: slug) != nil
     }
 
+    /// Seed the accounts list if the catalog hasn't been loaded yet —
+    /// so the first voice query after a fresh app launch finds the
+    /// user's connections even if they haven't opened Settings.
+    func ensureAccountsLoaded() async {
+        guard accounts.isEmpty else { return }
+        if let list = try? await PipedreamClient.shared.listAccounts() {
+            self.accounts = list
+        }
+    }
+}
+
+// MARK: - Connector convenience: Pipedream-proxied upstream calls
+
+extension Connector {
+    /// Makes a Pipedream-proxied upstream request if a live account
+    /// exists for this connector's `pipedreamAppSlug`. Throws
+    /// `ConnectorError.notConnected` if no account is available.
+    @MainActor
+    func pipedreamProxy(
+        url: String,
+        method: String = "GET",
+        body: Any? = nil
+    ) async throws -> Data {
+        guard let slug = pipedreamAppSlug else {
+            throw ConnectorError.notConnected(name)
+        }
+        await PipedreamCatalog.shared.ensureAccountsLoaded()
+        guard let account = PipedreamCatalog.shared.account(forApp: slug) else {
+            throw ConnectorError.notConnected(name)
+        }
+        return try await PipedreamClient.shared.proxy(
+            accountId: account.id,
+            url: url,
+            method: method,
+            body: body
+        )
+    }
+
+    /// True when PipedreamCatalog reports a live account for this
+    /// connector's `pipedreamAppSlug`.
+    @MainActor
+    var isPipedreamConnected: Bool {
+        guard let slug = pipedreamAppSlug else { return false }
+        return PipedreamCatalog.shared.account(forApp: slug) != nil
+    }
+
     /// Map app slug → known category. Uses Pipedream's `categories`
     /// field when available, else falls back to a regex classifier
     /// similar to the server-side Nango one so the UI groups nicely.

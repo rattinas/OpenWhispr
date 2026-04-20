@@ -13,6 +13,7 @@ final class ConnectorRegistry: ObservableObject {
         GoogleAdsConnector.shared,
         MetaAdsConnector.shared,
         GmailConnector.shared,
+        GoogleCalendarConnector.shared,
     ]
 
     /// Connectors grouped by category for the settings UI.

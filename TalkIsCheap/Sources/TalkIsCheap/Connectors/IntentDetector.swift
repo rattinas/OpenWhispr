@@ -27,15 +27,17 @@ struct IntentDetector {
     private static let servicePatterns: [(id: String, patterns: [String])] = [
         // Order matters: longer/more specific first. "google ads" must win
         // over "google analytics" if the user mentions both.
-        ("google_ads", ["google ads", "googleads", "adwords"]),
-        ("meta_ads",   ["meta ads", "facebook ads", "instagram ads", "fb ads"]),
-        ("ga4",        ["google analytics", "analytics", "ga4"]),
-        ("shopify",    ["shopify"]),
-        ("stripe",     ["stripe"]),
-        ("github",     ["github", "git hub", "git-hub"]),
+        ("google_ads",     ["google ads", "googleads", "adwords"]),
+        ("meta_ads",       ["meta ads", "facebook ads", "instagram ads", "fb ads"]),
+        ("ga4",            ["google analytics", "analytics", "ga4"]),
+        ("google_calendar", ["google calendar", "calendar", "kalender", "termin", "meeting", "schedule"]),
+        ("gmail",          ["gmail", "google mail", "email", "mail", "posteingang", "letzte mail", "last email"]),
+        ("shopify",        ["shopify"]),
+        ("stripe",         ["stripe"]),
+        ("github",         ["github", "git hub", "git-hub"]),
         // Generic brand mentions — run after the multi-word variants
         // so "facebook werbeausgaben" still picks meta_ads.
-        ("meta_ads",   ["facebook", "instagram", "meta"]),
+        ("meta_ads",       ["facebook", "instagram", "meta"]),
     ]
 
     private static func extractConnectorHint(from normalized: String) -> String? {

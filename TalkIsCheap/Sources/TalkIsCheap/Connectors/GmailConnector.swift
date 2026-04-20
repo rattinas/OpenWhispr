@@ -24,6 +24,7 @@ final class GmailConnector: Connector {
     let serviceNames: [String] = ["gmail", "google mail", "email", "mail"]
     let category: ConnectorCategory = .productivity
     let nangoProvider: String? = "google-mail"
+    let pipedreamAppSlug: String? = "gmail"
 
     let setupGuide: [SetupStep] = [
         SetupStep(
@@ -33,7 +34,7 @@ final class GmailConnector: Connector {
     ]
     let credentialFields: [(key: String, label: String, isSecret: Bool)] = []
 
-    var isConnected: Bool { isNangoConnected }
+    var isConnected: Bool { isPipedreamConnected || isNangoConnected }
 
     func connect(credentials: [String: String]) throws {
         // Everything runs via Nango — nothing to store locally.
@@ -44,7 +45,7 @@ final class GmailConnector: Connector {
     // MARK: Query
 
     func query(intent: ConnectorIntent) async throws -> ConnectorResult {
-        guard isNangoConnected else { throw ConnectorError.notConnected(name) }
+        guard isConnected else { throw ConnectorError.notConnected(name) }
 
         // Heuristic: if the query mentions a sender name/email, search for that.
         let sender = extractSender(from: intent.rawQuery)
@@ -55,6 +56,16 @@ final class GmailConnector: Connector {
         return try await recentInboxSummary(intent: intent)
     }
 
+    /// Unified HTTP GET — picks Pipedream if live, falls back to Nango
+    /// (path style), finally Nango-proxy.
+    @MainActor
+    private func apiGet(path: String) async throws -> Data {
+        if isPipedreamConnected {
+            return try await pipedreamProxy(url: "https://gmail.googleapis.com\(path)")
+        }
+        return try await nangoProxy(path: path)
+    }
+
     // MARK: Specific query patterns
 
     private func lastMessageFromSender(_ sender: String, intent: ConnectorIntent) async throws -> ConnectorResult {
@@ -63,7 +74,7 @@ final class GmailConnector: Connector {
         let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
         let listPath = "/gmail/v1/users/me/messages?maxResults=1&q=\(encoded)"
 
-        let listData = try await nangoProxy(path: listPath)
+        let listData = try await apiGet(path: listPath)
         guard let listJson = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
               let messages = listJson["messages"] as? [[String: Any]],
               let first = messages.first,
@@ -72,7 +83,7 @@ final class GmailConnector: Connector {
             return simpleResult("No message found from **\(sender)**.", intent: intent, raw: [:])
         }
 
-        let msgData = try await nangoProxy(path: "/gmail/v1/users/me/messages/\(messageId)?format=full")
+        let msgData = try await apiGet(path: "/gmail/v1/users/me/messages/\(messageId)?format=full")
         guard let msg = try? JSONSerialization.jsonObject(with: msgData) as? [String: Any] else {
             throw ConnectorError.parseError("Couldn't parse Gmail message")
         }
@@ -113,8 +124,8 @@ final class GmailConnector: Connector {
 
     private func recentInboxSummary(intent: ConnectorIntent) async throws -> ConnectorResult {
         // Unread count + 5 most recent subject lines.
-        async let unreadData = nangoProxy(path: "/gmail/v1/users/me/messages?q=is:unread&maxResults=1")
-        async let recentData = nangoProxy(path: "/gmail/v1/users/me/messages?maxResults=5")
+        async let unreadData = apiGet(path: "/gmail/v1/users/me/messages?q=is:unread&maxResults=1")
+        async let recentData = apiGet(path: "/gmail/v1/users/me/messages?maxResults=5")
         let (unreadRaw, recentRaw) = try await (unreadData, recentData)
 
         let unreadJson = try? JSONSerialization.jsonObject(with: unreadRaw) as? [String: Any]
@@ -125,7 +136,7 @@ final class GmailConnector: Connector {
 
         var summaries: [String] = []
         for id in recentIds.prefix(5) {
-            guard let data = try? await nangoProxy(path: "/gmail/v1/users/me/messages/\(id)?format=metadata&metadataHeaders=From&metadataHeaders=Subject") else { continue }
+            guard let data = try? await apiGet(path: "/gmail/v1/users/me/messages/\(id)?format=metadata&metadataHeaders=From&metadataHeaders=Subject") else { continue }
             guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             let headers = ((obj["payload"] as? [String: Any])?["headers"] as? [[String: Any]]) ?? []
             let from = headers.first { ($0["name"] as? String)?.lowercased() == "from" }?["value"] as? String ?? "?"
