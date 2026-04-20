@@ -87,39 +87,63 @@ struct ConnectedServicesView: View {
                 }
             }
 
-            // "Recommended for <industry>" when a pack is selected.
-            if let pack = activePack {
-                let recommended = appsForPack(pack)
-                if !recommended.isEmpty {
-                    Section {
-                        ForEach(recommended.prefix(25), id: \.slug) { app in
-                            appRow(app, highlight: true)
-                        }
-                    } header: {
-                        HStack(spacing: 6) {
-                            Text(pack.emoji)
-                            Text("Recommended for \(pack.name)")
-                        }
-                    } footer: {
-                        Text(pack.tagline).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            // All apps grouped by category.
-            ForEach(groupedApps(), id: \.0) { cat, list in
+            let searchActive = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if searchActive {
+                // Flat list of server-returned search results — no category
+                // buckets, no local filter, no pack priority. User typed
+                // something, show them exactly what Pipedream matched.
                 Section {
-                    ForEach(list.prefix(30), id: \.slug) { app in
-                        appRow(app)
+                    let connected = connectedSlugs()
+                    let results = catalog.apps.filter { !connected.contains($0.slug.lowercased()) }
+                    if results.isEmpty && !catalog.isLoading {
+                        Text("No apps matching \"\(search)\".")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    if list.count > 30 {
-                        Text("\(list.count - 30) more — type in the search box above.")
-                            .font(.caption).foregroundStyle(.secondary)
+                    ForEach(results, id: \.slug) { app in
+                        appRow(app)
                     }
                 } header: {
                     HStack(spacing: 6) {
-                        Image(systemName: NangoCategoryDisplay.icon(cat))
-                        Text(NangoCategoryDisplay.label(cat))
+                        Image(systemName: "magnifyingglass")
+                        Text("Search results")
+                    }
+                }
+            } else {
+                // "Recommended for <industry>" when a pack is selected.
+                if let pack = activePack {
+                    let recommended = appsForPack(pack)
+                    if !recommended.isEmpty {
+                        Section {
+                            ForEach(recommended.prefix(25), id: \.slug) { app in
+                                appRow(app, highlight: true)
+                            }
+                        } header: {
+                            HStack(spacing: 6) {
+                                Text(pack.emoji)
+                                Text("Recommended for \(pack.name)")
+                            }
+                        } footer: {
+                            Text(pack.tagline).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                // All curated apps grouped by category.
+                ForEach(groupedApps(), id: \.0) { cat, list in
+                    Section {
+                        ForEach(list.prefix(30), id: \.slug) { app in
+                            appRow(app)
+                        }
+                        if list.count > 30 {
+                            Text("\(list.count - 30) more — type in the search box above.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        HStack(spacing: 6) {
+                            Image(systemName: NangoCategoryDisplay.icon(cat))
+                            Text(NangoCategoryDisplay.label(cat))
+                        }
                     }
                 }
             }
