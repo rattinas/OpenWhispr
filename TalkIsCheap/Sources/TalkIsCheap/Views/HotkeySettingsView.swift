@@ -71,11 +71,8 @@ struct HotkeySettingsView: View {
                 usageStep(
                     icon: "mic.fill",
                     title: "Record (dictate into anything)",
-                    steps: [
-                        "**Hold** \(rec.kind.descriptionWith(primary: rec.key)) and start speaking.",
-                        "**Release** — your text is polished by Claude Haiku and pasted at the cursor.",
-                    ],
-                    footnote: "Short taps are ignored — only real holds trigger dictation.",
+                    steps: recordSteps(for: rec),
+                    footnote: "Short holds below the threshold are ignored so accidental taps don't leak audio."
                 )
             }
 
@@ -83,12 +80,8 @@ struct HotkeySettingsView: View {
                 usageStep(
                     icon: "sparkle.magnifyingglass",
                     title: "Command Mode (voice search + connected tools)",
-                    steps: [
-                        "Do \(srch.kind.descriptionWith(primary: srch.key)). The search panel opens.",
-                        "**Speak your question.** (\"Wie viel Umsatz hatten wir gestern?\", \"freier Termin morgen?\", \"letzte Mail von Chris?\")",
-                        "**Press \(srch.key.glyph) \(srch.key.label) once** to submit. Answer streams in; follow-ups work inline.",
-                    ],
-                    footnote: "Connected services (Gmail, Calendar, Shopify) answer from live data. Crypto / stocks / weather work offline via public APIs.",
+                    steps: searchSteps(for: srch),
+                    footnote: "Connected services (Gmail, Calendar, Shopify) answer from live data. Crypto / stocks / weather work offline via public APIs."
                 )
             }
 
@@ -96,12 +89,10 @@ struct HotkeySettingsView: View {
                 usageStep(
                     icon: "hands.sparkles.fill",
                     title: "Hands-Free (long dictation — walk & talk)",
-                    steps: [
-                        "Do \(hf.kind.descriptionWith(primary: hf.key)) **briefly**.",
-                        "**Release** everything — recording keeps running. Speak for as long as you want, no keys held.",
-                        "**Press \(hf.key.glyph) \(hf.key.label) once** to stop and paste.",
-                    ],
-                    footnote: "Unlike Record, Hands-Free is a toggle — activate once, come back when you're done."
+                    steps: handsFreeSteps(for: hf),
+                    footnote: hf.stopMode == .nextPress
+                        ? "Toggle mode — activate once, come back when you're done. Keys can be released between activation and stop."
+                        : "Hold-style — keys stay down while you dictate."
                 )
             }
 
@@ -132,6 +123,74 @@ struct HotkeySettingsView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - Usage step text builders (kept out of the ViewBuilder so Swift
+    // doesn't try to treat local assignments as view expressions).
+
+    private func recordSteps(for p: TriggerPattern) -> [String] {
+        switch (p.kind, p.stopMode) {
+        case (.hold, .release):
+            return [
+                "**Hold** \(p.kind.descriptionWith(primary: p.key)) and start speaking.",
+                "**Release** — your text is polished by Claude Haiku and pasted at the cursor.",
+            ]
+        case (.hold, .nextPress):
+            return [
+                "Briefly press \(p.kind.descriptionWith(primary: p.key)) to start recording. Release.",
+                "Speak for as long as you want.",
+                "**Press \(p.key.glyph) \(p.key.label) once** to stop and paste.",
+            ]
+        case (.taps, .release):
+            return [
+                "Do \(p.kind.descriptionWith(primary: p.key)), **hold the final tap** and speak.",
+                "**Release** — polished text lands at your cursor.",
+            ]
+        case (.taps, .nextPress):
+            return [
+                "Do \(p.kind.descriptionWith(primary: p.key)) to start recording.",
+                "**Press \(p.key.glyph) \(p.key.label) once** to stop and paste.",
+            ]
+        case (.combo, .release):
+            return [
+                "**Hold** \(p.kind.descriptionWith(primary: p.key)) and speak.",
+                "**Release** any of the keys — text lands at your cursor.",
+            ]
+        case (.combo, .nextPress):
+            return [
+                "Press \(p.kind.descriptionWith(primary: p.key)) briefly to start.",
+                "**Press \(p.key.glyph) \(p.key.label) once** to stop and paste.",
+            ]
+        }
+    }
+
+    private func searchSteps(for p: TriggerPattern) -> [String] {
+        let stopStep: String
+        switch p.stopMode {
+        case .release:
+            stopStep = "**Keep \(p.key.glyph) \(p.key.label) held** while you speak. Release → answer."
+        case .nextPress:
+            stopStep = "**Press \(p.key.glyph) \(p.key.label) once** when you're done to submit. Answer streams in; follow-ups work inline."
+        }
+        return [
+            "Do \(p.kind.descriptionWith(primary: p.key)). The search panel opens.",
+            "**Speak your question.** (\"Wie viel Umsatz hatten wir gestern?\", \"freier Termin morgen?\", \"letzte Mail von Chris?\")",
+            stopStep,
+        ]
+    }
+
+    private func handsFreeSteps(for p: TriggerPattern) -> [String] {
+        if p.stopMode == .release {
+            return [
+                "**Hold** \(p.kind.descriptionWith(primary: p.key)) and speak.",
+                "**Release** when done — text lands at your cursor.",
+            ]
+        }
+        return [
+            "Do \(p.kind.descriptionWith(primary: p.key)) **briefly**.",
+            "**Release** everything — recording keeps running. Speak for as long as you want, no keys held.",
+            "**Press \(p.key.glyph) \(p.key.label) once** to stop and paste.",
+        ]
     }
 
     @ViewBuilder
@@ -233,7 +292,12 @@ struct HotkeySettingsView: View {
                         get: { KindKind(pattern.kind) },
                         set: { kk in
                             var p = pattern
-                            p.kind = kk.defaultValue(current: pattern.kind)
+                            let newKind = kk.defaultValue(current: pattern.kind)
+                            p.kind = newKind
+                            // Re-pick the natural stopMode for this (mode, kind)
+                            // pair so switching kind doesn't strand the user on
+                            // a nonsensical default (e.g. Hold + nextPress).
+                            p.stopMode = TriggerPattern.defaultStopMode(for: mode, kind: newKind)
                             binding.wrappedValue = p
                         }
                     )) {
@@ -245,6 +309,32 @@ struct HotkeySettingsView: View {
                     .frame(maxWidth: 280)
                     Spacer()
                 }
+
+                // Stop mode picker — "Release the key" (hold-style) vs
+                // "Press again" (toggle). For .hold kinds both options make
+                // sense (toggle = press once briefly, speak, press again to
+                // stop). For .taps with .release = "double-tap-and-hold".
+                HStack {
+                    Text("Stop when you:").font(.caption.bold())
+                    Picker("", selection: Binding(
+                        get: { pattern.stopMode },
+                        set: { sm in
+                            var p = pattern
+                            p.stopMode = sm
+                            binding.wrappedValue = p
+                        }
+                    )) {
+                        Text("Release").tag(StopMode.release)
+                        Text("Press again").tag(StopMode.nextPress)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 240)
+                    Spacer()
+                }
+                Text(pattern.stopMode.hint)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 4)
 
                 // Kind-specific controls
                 switch pattern.kind {

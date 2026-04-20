@@ -346,9 +346,10 @@ final class HotkeyManager {
                 }
             }
         } else {
-            // Release — finalise holds & combos. HandsFree transitions to
-            // `armed` instead of firing onKeyUp because it's a toggle: you
-            // can't "hold your hands free", you activate & come back later.
+            // Release — finalise holds, combos, and taps-with-release.
+            //   stopMode==.release     → fire onKeyUp now, activeMode cleared.
+            //   stopMode==.nextPress   → transition activated → armed, the next
+            //                            primary-key press stops the mode.
             for mode in TriggerMode.allCases {
                 guard let pattern = patterns[mode], pattern.enabled,
                       let state = states[mode] else { continue }
@@ -357,16 +358,16 @@ final class HotkeyManager {
                     guard key == pattern.key, state.activated else { continue }
                     let heldMs = Int(max(0, (now - state.holdStartTime) * 1000))
                     if heldMs < minMs {
-                        // Short press — cancel for all modes (including HF).
+                        // Short press — cancel regardless of stopMode.
                         state.activated = false
                         if activeMode == mode { activeMode = nil }
                         fireOnCancel(for: mode)
-                    } else if mode == .handsFree {
-                        // Long hold release → arm for toggle stop.
+                    } else if pattern.stopMode == .nextPress {
+                        // Long hold release → arm for next-press stop.
                         state.activated = false
                         state.armed = true
-                        // activeMode stays set so other modes can't claim it.
                     } else {
+                        // Classic hold-to-talk: release ends the mode.
                         state.activated = false
                         if activeMode == mode { activeMode = nil }
                         fireOnKeyUp(for: mode)
@@ -376,8 +377,7 @@ final class HotkeyManager {
                     guard required.contains(key) else { continue }
                     let allHeld = required.allSatisfy { $0.isPressed(in: fullMask) }
                     if !allHeld && state.activated {
-                        if mode == .handsFree {
-                            // Arm for toggle stop.
+                        if pattern.stopMode == .nextPress {
                             state.activated = false
                             state.armed = true
                         } else {
@@ -387,7 +387,13 @@ final class HotkeyManager {
                         }
                     }
                 case .taps:
-                    break
+                    // stopMode==.release uses hold-after-Nth-tap semantics —
+                    // release of the primary key after activation ends the mode.
+                    guard pattern.stopMode == .release,
+                          key == pattern.key, state.activated else { continue }
+                    state.activated = false
+                    if activeMode == mode { activeMode = nil }
+                    fireOnKeyUp(for: mode)
                 }
             }
         }
@@ -396,7 +402,7 @@ final class HotkeyManager {
     /// Actually fire a taps pattern that's been picked as the winner. Called
     /// either inline (Step 2 commit) or deferred via `pendingCommit`.
     private func commitTaps(mode: TriggerMode) {
-        guard let state = states[mode] else { return }
+        guard let state = states[mode], let pattern = patterns[mode] else { return }
         state.pendingCommit = nil
         state.tapTimestamps.removeAll()
         // Clear any other pending commits on the same key (they lost the
@@ -407,8 +413,19 @@ final class HotkeyManager {
             states[other]?.tapTimestamps.removeAll()
         }
         cancelProvisionalHolds(exceptMode: mode)
-        state.armed = true
         activeMode = mode
+        // stopMode drives whether we wait for the Nth key's release (hold
+        // semantics — the user is about to hold the last tap while speaking)
+        // or for the next primary-key press (toggle semantics).
+        if pattern.stopMode == .release {
+            state.activated = true
+            state.armed = false
+            // Track that this activation came from a taps gesture — release of
+            // the primary key below will fire onKeyUp.
+        } else {
+            state.activated = false
+            state.armed = true
+        }
         fireOnKeyDown(for: mode)
     }
 

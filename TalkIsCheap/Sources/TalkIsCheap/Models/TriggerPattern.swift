@@ -116,6 +116,39 @@ struct ModifierMask: OptionSet, Codable, Equatable {
     static let function = ModifierMask(rawValue: 1 << 4)
 }
 
+/// How a mode stops running once it's been activated. Both options are
+/// valid for every `TriggerKind` — which one fits best depends on the mode
+/// and the user's muscle memory.
+///
+///   `.release`     — once the gesture fires, keep the primary key held.
+///                    Letting go ends the mode. Classic push-to-talk feel.
+///                    For `.taps`, this means "double-tap-and-hold the last
+///                    tap" — the Nth press activates, the next release stops.
+///
+///   `.nextPress`   — gesture fires, you release everything, the mode stays
+///                    active. A subsequent press of the primary key stops it.
+///                    Toggle feel — natural for hands-free and for when the
+///                    user wants to speak long-form without holding a key.
+enum StopMode: String, Codable, CaseIterable, Identifiable {
+    case release
+    case nextPress
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .release:   return "Release the key"
+        case .nextPress: return "Press again"
+        }
+    }
+
+    var hint: String {
+        switch self {
+        case .release:   return "Hold the last key, let go when you're done."
+        case .nextPress: return "Hands free — press the key again any time to stop."
+        }
+    }
+}
+
 /// Shape of the gesture that activates a mode.
 enum TriggerKind: Codable, Equatable {
     /// Hold the primary key for at least `minMs` → activate.
@@ -151,6 +184,10 @@ enum TriggerKind: Codable, Equatable {
 struct TriggerPattern: Codable, Equatable {
     var key: TriggerKey                     // primary trigger key
     var kind: TriggerKind
+    /// How the mode ends once it's started — hold-style (release) or
+    /// toggle-style (next press). Defaults depend on mode + kind (see
+    /// `defaultStopMode(for:kind:)`).
+    var stopMode: StopMode
     /// Maximum inter-tap gap this user consistently hits. Measured during
     /// calibration; fresh defaults use 400 ms. Only meaningful for `.taps`.
     var learnedMaxInterTapMs: Int
@@ -162,11 +199,70 @@ struct TriggerPattern: Codable, Equatable {
     /// the HotkeyManager won't listen for this pattern.
     var enabled: Bool
 
+    /// Some stopMode values only make sense for certain (mode, kind) combos.
+    /// Decodes old JSON (without stopMode) by supplying the natural default.
+    init(key: TriggerKey,
+         kind: TriggerKind,
+         stopMode: StopMode,
+         learnedMaxInterTapMs: Int,
+         learnedMedianInterTapMs: Int,
+         calibrationSampleCount: Int,
+         enabled: Bool) {
+        self.key = key
+        self.kind = kind
+        self.stopMode = stopMode
+        self.learnedMaxInterTapMs = learnedMaxInterTapMs
+        self.learnedMedianInterTapMs = learnedMedianInterTapMs
+        self.calibrationSampleCount = calibrationSampleCount
+        self.enabled = enabled
+    }
+
+    // Custom decoder so older JSON blobs (pre-stopMode) still work.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.key = try c.decode(TriggerKey.self, forKey: .key)
+        self.kind = try c.decode(TriggerKind.self, forKey: .kind)
+        self.learnedMaxInterTapMs = try c.decode(Int.self, forKey: .learnedMaxInterTapMs)
+        self.learnedMedianInterTapMs = try c.decodeIfPresent(Int.self, forKey: .learnedMedianInterTapMs) ?? 0
+        self.calibrationSampleCount = try c.decodeIfPresent(Int.self, forKey: .calibrationSampleCount) ?? 0
+        self.enabled = try c.decode(Bool.self, forKey: .enabled)
+        // Fall back to a .release-ish default for older installs so upgrades
+        // don't surprise users — if the encoded blob didn't have stopMode,
+        // the old HotkeyManager was using taps=toggle + combo=hold semantics,
+        // which map to the per-(mode,kind) defaults below.
+        if let decoded = try c.decodeIfPresent(StopMode.self, forKey: .stopMode) {
+            self.stopMode = decoded
+        } else {
+            // No mode context available during Decode — pick a sensible default
+            // based solely on kind. Settings will normalise on next save.
+            switch kind {
+            case .hold:   self.stopMode = .release
+            case .combo:  self.stopMode = .release
+            case .taps:   self.stopMode = .nextPress
+            }
+        }
+    }
+
+    /// Per-(mode, kind) factory for the "best" stopMode when the user hasn't
+    /// overridden it. Record wants hold-to-talk feel regardless of gesture;
+    /// HandsFree always toggles because hands aren't on the keys; Search is
+    /// toggle on .taps (the "command mode" experience) and hold on the rest.
+    static func defaultStopMode(for mode: TriggerMode, kind: TriggerKind) -> StopMode {
+        switch mode {
+        case .handsFree:  return .nextPress
+        case .record:     return .release
+        case .search:
+            if case .taps = kind { return .nextPress }
+            return .release
+        }
+    }
+
     // MARK: - Factory defaults
 
     static let defaultRecord = TriggerPattern(
         key: .control,
         kind: .hold(minMs: 150),
+        stopMode: .release,
         learnedMaxInterTapMs: 400,
         learnedMedianInterTapMs: 0,
         calibrationSampleCount: 0,
@@ -175,6 +271,7 @@ struct TriggerPattern: Codable, Equatable {
     static let defaultSearch = TriggerPattern(
         key: .control,
         kind: .taps(count: 2),
+        stopMode: .nextPress,
         learnedMaxInterTapMs: 400,
         learnedMedianInterTapMs: 0,
         calibrationSampleCount: 0,
@@ -191,6 +288,7 @@ struct TriggerPattern: Codable, Equatable {
     static let defaultHandsFree = TriggerPattern(
         key: .control,
         kind: .combo(modifiers: [.option]),
+        stopMode: .nextPress,
         learnedMaxInterTapMs: 400,
         learnedMedianInterTapMs: 0,
         calibrationSampleCount: 0,
