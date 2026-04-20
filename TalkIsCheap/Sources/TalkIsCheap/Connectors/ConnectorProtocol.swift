@@ -204,11 +204,18 @@ protocol Connector: AnyObject {
     /// integration unique_key so the connector works no matter how the
     /// user named their integration in the Nango dashboard.
     var nangoProvider: String? { get }
+
+    /// Pipedream app slug this connector matches against. When the
+    /// PipedreamCatalog reports a live account with this slug, the
+    /// connector routes query() API calls through our /api/pipedream/proxy
+    /// endpoint — no tokens leave the server.
+    var pipedreamAppSlug: String? { get }
 }
 
 extension Connector {
     var nangoIntegrationKey: String? { nil }
     var nangoProvider: String? { nil }
+    var pipedreamAppSlug: String? { nil }
 }
 
 extension Connector {
