@@ -1,53 +1,111 @@
 import Cocoa
+import Carbon
 
-/// Global hotkey manager with Push-to-Talk AND Hands-Free modes.
-/// - Push-to-talk: Hold CTRL to record, release to stop
-/// - Hands-free: Double-tap CTRL to start, single tap CTRL to stop
+/// Global hotkey manager driven by user-configurable `TriggerPattern`s.
+///
+/// Each of the three modes (record / search / hands-free) has its own gesture
+/// wired up in Settings → Hotkeys. This class listens to the raw modifier
+/// event stream, matches events against every enabled pattern, and fires the
+/// corresponding mode callback.
+///
+/// Architecture:
+///   1. Source: CGEventTap (preferred) or NSEvent monitor (fallback without
+///      accessibility permission). Both funnel into `ingestFlagsChanged(mask:)`.
+///   2. Dispatcher: `ingestFlagsChanged` derives press/release edges per
+///      modifier key, then updates a `PatternState` for each enabled pattern.
+///   3. Callbacks: each pattern fires the mode's callbacks — record &
+///      hands-free get `onKeyDown/onKeyUp`; search uses `onSearchKeyDown/Up`.
+///
+/// The matcher is gesture-type aware:
+///   * `.hold(minMs)`       — start fires on press; only commits if the user
+///                            actually held for `minMs` (short releases abort
+///                            so a quick tap doesn't leak into the hold mode).
+///                            Stop fires on release.
+///   * `.taps(count)`       — inter-tap gap ≤ `learnedMaxInterTapMs` (the
+///                            user's calibrated rhythm). `count`-th tap
+///                            arming fires `onKeyDown` immediately; the very
+///                            next press fires `onKeyUp`. Pure toggle.
+///   * `.combo(modifiers:)` — primary key + all modifiers held simultaneously.
+///                            `onKeyDown` on completion, `onKeyUp` when any
+///                            of the required keys releases.
 final class HotkeyManager {
     static let shared = HotkeyManager()
 
+    // MARK: - Callbacks
+
+    /// Record mode: hold-to-talk. onKeyDown → start recording,
+    /// onKeyUp → stop & paste. onCancel → abort recording silently
+    /// (e.g. when the "hold" was really a short tap).
     var onKeyDown: (() -> Void)?
     var onKeyUp: (() -> Void)?
-    var onCancel: (() -> Void)?  // called on short tap to silently cancel recording
+    var onCancel: (() -> Void)?
+    /// Fallback hands-free toggle callback — currently unused; hands-free
+    /// mode now routes through onKeyDown/onKeyUp like record.
     var onHandsFreeToggle: (() -> Void)?
 
-    // Search hotkey (Ctrl+Cmd)
+    /// Search mode. onSearchKeyDown → open search panel & start capturing
+    /// audio; onSearchKeyUp → submit the query.
     var onSearchKeyDown: (() -> Void)?
     var onSearchKeyUp: (() -> Void)?
 
-    private var globalMonitor: Any?
-    private var localMonitor: Any?
-    private var controlIsDown = false
-    private var otherKeyPressed = false
-    private var cmdIsDown = false
+    // MARK: - Public state flags
 
-    // Hands-free state
-    private var handsFreeActive = false
-    private var lastCtrlReleaseTime: TimeInterval = 0
-    private var pushStartTime: TimeInterval = 0
-    private let doubleTapWindow: TimeInterval = 0.4
-    private let maxTapDuration: TimeInterval = 0.25  // short tap = potential double-tap
+    /// True while hands-free mode is actively recording. Used by MenuBarIcon.
+    var isHandsFree: Bool { activeMode == .handsFree }
 
-    private var targetKeyCode: Int { AppSettings.shared.hotkeyCode }
-    private var isModifierHotkey: Bool { targetKeyCode == 0 || targetKeyCode == 59 || targetKeyCode == 62 }
+    /// When non-zero, all mode callbacks are suppressed and internal state is
+    /// reset on each event. Use this during the calibration flow so the user
+    /// can tap their pattern without accidentally starting recordings.
+    /// Reference-counted so nested callers (e.g. two sheets) don't stomp each
+    /// other.
+    private var suspendDepth: Int = 0
 
-    var isHandsFree: Bool { isHandsFreeMode }
+    /// Suspend all hotkey callbacks. Balanced with `resumeCallbacks()`.
+    func suspendCallbacks() {
+        suspendDepth += 1
+        // Drop any in-flight activation so resuming doesn't fire a stale stop.
+        resetToggleState()
+        Log.write("HotkeyManager: callbacks suspended (depth \(suspendDepth))")
+    }
+
+    func resumeCallbacks() {
+        suspendDepth = max(0, suspendDepth - 1)
+        resetToggleState()
+        Log.write("HotkeyManager: callbacks resumed (depth \(suspendDepth))")
+    }
 
     /// Reset toggle state (call when recording is cancelled externally so the
     /// next hotkey press starts a new recording rather than trying to stop one).
     func resetToggleState() {
-        toggleState = .idle
+        for mode in TriggerMode.allCases {
+            states[mode]?.armed = false
+            states[mode]?.activated = false
+            states[mode]?.tapTimestamps.removeAll()
+            states[mode]?.pendingCommit?.cancel()
+            states[mode]?.pendingCommit = nil
+        }
+        activeMode = nil
+    }
+
+    // MARK: - Lifecycle
+
+    init() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(reloadPatterns),
+            name: .triggerPatternsChanged,
+            object: nil
+        )
+        reloadPatternsSync()
     }
 
     func start() {
         stop()
-
         if AXIsProcessTrusted() {
             startWithCGEventTap()
             return
         }
-
-        Log.write("Using NSEvent monitor (CGEventTap unavailable)")
+        Log.write("HotkeyManager: using NSEvent monitor (CGEventTap unavailable)")
         startWithNSEventMonitor()
     }
 
@@ -55,59 +113,82 @@ final class HotkeyManager {
         if let m = globalMonitor { NSEvent.removeMonitor(m); globalMonitor = nil }
         if let m = localMonitor { NSEvent.removeMonitor(m); localMonitor = nil }
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
-        if let source = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        if let source = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
         eventTap = nil; runLoopSource = nil
     }
 
-    // MARK: - NSEvent Monitor
+    // MARK: - Pattern storage
 
-    private func startWithNSEventMonitor() {
-        let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .keyUp]
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] e in self?.handleNSEvent(e) }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] e in self?.handleNSEvent(e); return e }
-        Log.write("NSEvent monitors started (keyCode: \(targetKeyCode), modifier: \(isModifierHotkey))")
-    }
+    /// Per-mode live pattern loaded from AppSettings.
+    private var patterns: [TriggerMode: TriggerPattern] = [:]
 
-    private func handleNSEvent(_ event: NSEvent) {
-        if event.type == .flagsChanged {
-            let ctrl = event.modifierFlags.contains(.control)
-            let cmd = event.modifierFlags.contains(.command)
-            handleModifierEvent(ctrl: ctrl, cmd: cmd)
-        } else if isModifierHotkey {
-            // Don't treat Cmd+key presses (e.g. Cmd+Shift+3/4 screenshots)
-            // as "other keys" that would cancel dictation — let them pass through.
-            let isCmdCombo = event.modifierFlags.contains(.command)
-            if !isCmdCombo {
-                handleControlEvent(pressed: event.modifierFlags.contains(.control), isOtherKey: event.type == .keyDown)
-            }
-        } else {
-            handleRegularNSEvent(event)
+    /// Per-mode match state (hold progress, recent-tap history, combo arming).
+    private var states: [TriggerMode: PatternState] = [:]
+
+    /// Which mode is currently "driving" — i.e. already fired onKeyDown and
+    /// is waiting for its release/stop event. At most one mode at a time to
+    /// keep state simple (prevents e.g. Record + HandsFree firing together).
+    private var activeMode: TriggerMode?
+
+    @objc private func reloadPatterns() { reloadPatternsSync() }
+
+    private func reloadPatternsSync() {
+        let s = AppSettings.shared
+        patterns = [
+            .record:    s.recordPattern,
+            .search:    s.searchPattern,
+            .handsFree: s.handsFreePattern,
+        ]
+        // Create fresh state slots for each mode.
+        for mode in TriggerMode.allCases where states[mode] == nil {
+            states[mode] = PatternState()
         }
     }
 
-    private func handleRegularNSEvent(_ event: NSEvent) {
-        if Int(event.keyCode) != targetKeyCode { return }
-        if event.type == .keyDown { DispatchQueue.main.async { [weak self] in self?.onKeyDown?() } }
-        else if event.type == .keyUp { DispatchQueue.main.async { [weak self] in self?.onKeyUp?() } }
-    }
+    // MARK: - Event monitors
 
-    // MARK: - CGEventTap
-
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var targetKeyIsDown = false
+
+    private var lastMask: ModifierMask = []
+
+    private func startWithNSEventMonitor() {
+        let mask: NSEvent.EventTypeMask = [.flagsChanged]
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] e in
+            self?.ingestFlagsChanged(mask: maskFromNSEvent(e))
+        }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] e in
+            self?.ingestFlagsChanged(mask: maskFromNSEvent(e))
+            return e
+        }
+        Log.write("HotkeyManager: NSEvent monitor active")
+    }
 
     private func startWithCGEventTap() {
-        let mask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue)
-            | (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+        let eventMask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue)
 
         guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: { proxy, type, event, refcon -> Unmanaged<CGEvent>? in
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: eventMask,
+            callback: { _, type, event, refcon -> Unmanaged<CGEvent>? in
                 guard let refcon else { return Unmanaged.passRetained(event) }
                 let mgr = Unmanaged<HotkeyManager>.fromOpaque(refcon).takeUnretainedValue()
-                return mgr.handleCGEvent(type: type, event: event)
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    if let tap = mgr.eventTap {
+                        CGEvent.tapEnable(tap: tap, enable: true)
+                    }
+                    return Unmanaged.passRetained(event)
+                }
+                if type == .flagsChanged {
+                    mgr.ingestFlagsChanged(mask: maskFromCGEvent(event))
+                }
+                return Unmanaged.passRetained(event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
@@ -115,224 +196,313 @@ final class HotkeyManager {
             startWithNSEventMonitor()
             return
         }
-
         self.eventTap = tap
         self.runLoopSource = CFMachPortCreateRunLoopSource(nil, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        Log.write("CGEventTap started (keyCode: \(targetKeyCode))")
+        Log.write("HotkeyManager: CGEventTap active")
     }
 
-    private func handleCGEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
-            return Unmanaged.passRetained(event)
-        }
+    // MARK: - Dispatcher
 
-        if isModifierHotkey {
-            let ctrl = event.flags.contains(.maskControl)
-            let cmd = event.flags.contains(.maskCommand)
-            if type == .flagsChanged {
-                handleModifierEvent(ctrl: ctrl, cmd: cmd)
-            } else if type == .keyDown && controlIsDown && !cmd {
-                // Skip Cmd+key combos (e.g. Cmd+Shift+3/4 screenshots) so they
-                // don't cancel dictation — the event still passes through.
-                handleControlEvent(pressed: ctrl, isOtherKey: true)
-            }
-        } else {
-            let kc = Int(event.getIntegerValueField(.keyboardEventKeycode))
-            if kc == targetKeyCode {
-                if type == .keyDown && !targetKeyIsDown {
-                    targetKeyIsDown = true
-                    DispatchQueue.main.async { [weak self] in self?.onKeyDown?() }
-                    return nil
-                } else if type == .keyUp && targetKeyIsDown {
-                    targetKeyIsDown = false
-                    DispatchQueue.main.async { [weak self] in self?.onKeyUp?() }
-                    return nil
-                }
-            }
-        }
-        return Unmanaged.passRetained(event)
-    }
+    /// Core entry point — derives per-key press/release edges from a new
+    /// `ModifierMask` snapshot and feeds each pattern's state machine.
+    private func ingestFlagsChanged(mask: ModifierMask) {
+        let previous = lastMask
+        lastMask = mask
 
-    // MARK: - Modifier routing
-    //
-    // Ctrl hold           → Push-to-Talk dictation
-    // Ctrl double-tap     → Voice Search (starts recording, tap again to stop)
-    // Ctrl+Shift hold     → Hands-Free dictation (release when done)
-
-    private var isHandsFreeMode = false
-    private var isSearchRecording = false
-
-    private func handleModifierEvent(ctrl: Bool, cmd: Bool) {
-        let shift = NSEvent.modifierFlags.contains(.shift)
-
-        // Ctrl+Shift = Hands-Free dictation
-        if ctrl && shift && !controlIsDown {
-            isHandsFreeMode = true
-            controlIsDown = true
-            otherKeyPressed = false
-            Log.write("HANDS-FREE START (Ctrl+Shift)")
-            DispatchQueue.main.async { [weak self] in self?.onKeyDown?() }
-            return
-        }
-
-        // Released from hands-free
-        if isHandsFreeMode && (!ctrl || !shift) {
-            isHandsFreeMode = false
-            controlIsDown = false
-            handsFreeActive = false
-            Log.write("HANDS-FREE STOP")
-            DispatchQueue.main.async { [weak self] in self?.onKeyUp?() }
-            return
-        }
-
-        // Normal Ctrl (no Shift, no Cmd)
-        if !shift && !cmd {
-            handleControlEvent(pressed: ctrl, isOtherKey: false)
-        }
-    }
-
-    // MARK: - Control key logic
-    //
-    // The tricky part: we need to distinguish between:
-    // 1. Long hold (>0.3s) → push-to-talk dictation (start on press, stop on release)
-    // 2. Double-tap (<0.4s between taps) → voice search
-    //
-    // In toggle mode (AppSettings.toggleRecordingMode):
-    //   • 1 press (idle)           → start dictation
-    //   • 1 press (while dictating) → stop + paste
-    //   • Double-tap (idle)        → start voice search
-    //   • 1 press (while searching) → stop + submit query
-    // A second press arriving inside `doubleTapWindow` after the first
-    // promotes the in-flight dictation to a search instead.
-    //
-    // Solution: Start dictation IMMEDIATELY on press (zero latency for hold).
-    // On quick release (<0.3s), cancel dictation (too short for meaningful audio)
-    // and remember the tap time for double-tap detection.
-
-    private var dictationStarted = false
-    private enum ToggleState { case idle, dictating, searching }
-    private var toggleState: ToggleState = .idle
-    private var lastTogglePressTime: TimeInterval = 0
-    private let holdThreshold: TimeInterval = 0.3  // releases shorter than this = tap, not dictation
-
-    private func handleControlEvent(pressed: Bool, isOtherKey: Bool) {
-        if isOtherKey && controlIsDown {
-            otherKeyPressed = true
-            return
-        }
-
-        // ── Toggle recording mode ─────────────────────────────────────────
-        if AppSettings.shared.toggleRecordingMode {
-            if pressed && !controlIsDown {
-                controlIsDown = true
-                otherKeyPressed = false
-                let now = ProcessInfo.processInfo.systemUptime
-                let sinceLastPress = now - lastTogglePressTime
-                let isDoubleTap = lastTogglePressTime > 0 && sinceLastPress < doubleTapWindow
-                lastTogglePressTime = now
-
-                switch toggleState {
-                case .idle:
-                    // First press of a fresh cycle → start dictation.
-                    toggleState = .dictating
-                    Log.write("TOGGLE: DICTATE START")
-                    DispatchQueue.main.async { [weak self] in self?.onKeyDown?() }
-                case .dictating:
-                    if isDoubleTap {
-                        // Second press landed inside the double-tap window —
-                        // the user actually wanted voice search. Cancel the
-                        // dictation we just started and start search instead.
-                        toggleState = .searching
-                        lastTogglePressTime = 0
-                        Log.write("TOGGLE: SEARCH (double-tap promoted)")
-                        DispatchQueue.main.async { [weak self] in
-                            self?.onCancel?()
-                            self?.onSearchKeyDown?()
-                        }
-                    } else {
-                        // Normal toggle-off → stop + paste.
-                        toggleState = .idle
-                        Log.write("TOGGLE: DICTATE STOP")
-                        DispatchQueue.main.async { [weak self] in self?.onKeyUp?() }
-                    }
-                case .searching:
-                    // Any subsequent press ends the search and submits the query.
-                    toggleState = .idle
-                    lastTogglePressTime = 0
-                    Log.write("TOGGLE: SEARCH STOP")
-                    DispatchQueue.main.async { [weak self] in self?.onSearchKeyUp?() }
-                }
-            } else if !pressed {
-                controlIsDown = false
-                // Key release never drives state in toggle mode.
-            }
-            return
-        }
+        // While suspended we still track the modifier state (so we don't
+        // miss a release that arrives mid-suspension) but we don't feed
+        // patterns. Resetting states on resume is handled by resetToggleState().
+        if suspendDepth > 0 { return }
 
         let now = ProcessInfo.processInfo.systemUptime
 
-        if pressed && !controlIsDown {
-            controlIsDown = true
-            otherKeyPressed = false
-            dictationStarted = false
-            pushStartTime = now
+        // Detect which modifier(s) changed state. Usually only one key flips
+        // per event, but handle multiple defensively.
+        for tk in TriggerKey.allCases {
+            let wasDown = tk.isPressed(in: previous)
+            let isDown  = tk.isPressed(in: mask)
+            guard wasDown != isDown else { continue }
+            handleEdge(key: tk, down: isDown, at: now, fullMask: mask)
+        }
+    }
 
-            // Check if this is a double-tap (second press within window)
-            if now - lastCtrlReleaseTime < doubleTapWindow && lastCtrlReleaseTime > 0 {
-                // DOUBLE TAP → Voice Search mode
-                isSearchRecording = true
-                lastCtrlReleaseTime = 0
-                Log.write("SEARCH: START (double-tap) — hold and speak, release to search")
-                DispatchQueue.main.async { [weak self] in self?.onSearchKeyDown?() }
+    /// Unified dispatcher. Order of operations matters because multiple
+    /// patterns may share a key (e.g. default Record=⌃hold + Search=⌃×2).
+    ///
+    ///   Press:
+    ///     1. Stop-signal check: armed taps pattern → toggle it off.
+    ///     2. Accumulate timestamps on every taps pattern that shares this key.
+    ///        If the LONGEST count that has reached completion can still be
+    ///        outgrown by an even longer pattern still inside its rhythm
+    ///        window, DEFER the commit by the longer pattern's tolerance.
+    ///        Otherwise commit immediately.
+    ///     3. Holds + combos. Combos preempt in-flight holds (same as taps).
+    ///
+    ///   Release:
+    ///     - Holds & combos finalise. Taps ignores releases.
+    private func handleEdge(key: TriggerKey, down: Bool, at now: TimeInterval, fullMask: ModifierMask) {
+        if down {
+            // Step 1: armed-mode stop signal. Any mode whose `armed` flag is
+            // set gets stopped when its primary key is pressed. This covers:
+            //   - .taps modes that reached their count (armed by matchTaps)
+            //   - HandsFree in any kind once activated (armed by release
+            //     handlers — hands-free is inherently toggle-style).
+            for mode in TriggerMode.allCases {
+                guard let pattern = patterns[mode], pattern.enabled,
+                      let state = states[mode] else { continue }
+                guard state.armed, key == pattern.key else { continue }
+                state.armed = false
+                state.activated = false
+                if activeMode == mode { activeMode = nil }
+                fireOnKeyUp(for: mode)
+                state.tapTimestamps.removeAll()
                 return
             }
 
-            // Start dictation IMMEDIATELY — no delay
-            dictationStarted = true
-            Log.write("DICTATION: START (hold)")
-            DispatchQueue.main.async { [weak self] in self?.onKeyDown?() }
+            // Step 2: accumulate timestamps + find the longest-ready pattern.
+            var longestReady: (mode: TriggerMode, count: Int)?
+            var longestPossibleCount: Int = 0
+            var longestPossibleTolerance: TimeInterval = 0
 
-        } else if !pressed && controlIsDown {
-            controlIsDown = false
+            for mode in TriggerMode.allCases {
+                guard let pattern = patterns[mode], pattern.enabled,
+                      let state = states[mode] else { continue }
+                guard case .taps(let count) = pattern.kind, key == pattern.key else { continue }
+                // A new press invalidates any pending deferred commit — we
+                // may need to defer again with fresh context.
+                state.pendingCommit?.cancel()
+                state.pendingCommit = nil
 
-            // Search mode: release = stop recording and search
-            if isSearchRecording {
-                isSearchRecording = false
-                Log.write("SEARCH: STOP (released)")
-                DispatchQueue.main.async { [weak self] in self?.onSearchKeyUp?() }
-                return
-            }
+                let tolerance = Double(max(100, pattern.learnedMaxInterTapMs)) / 1000.0
+                state.tapTimestamps = state.tapTimestamps.filter { now - $0 <= tolerance }
+                state.tapTimestamps.append(now)
 
-            if otherKeyPressed {
-                if dictationStarted {
-                    // Cancel dictation — user pressed Ctrl+<other key> (e.g. Ctrl+C)
-                    dictationStarted = false
-                    Log.write("DICTATION: CANCEL (other key pressed)")
-                    DispatchQueue.main.async { [weak self] in self?.onCancel?() }
+                // Track the longest count-pattern that exists on this key so
+                // we know whether to defer the commit for disambiguation.
+                if count > longestPossibleCount {
+                    longestPossibleCount = count
+                    longestPossibleTolerance = tolerance
                 }
+                if state.tapTimestamps.count >= count {
+                    if longestReady == nil || count > longestReady!.count {
+                        longestReady = (mode, count)
+                    }
+                }
+            }
+
+            if let winner = longestReady {
+                let winnerMode = winner.mode
+                if winner.count < longestPossibleCount {
+                    // There's a longer pattern still growing — wait up to its
+                    // tolerance window for one more tap before committing.
+                    let task = DispatchWorkItem { [weak self] in
+                        self?.commitTaps(mode: winnerMode)
+                    }
+                    states[winnerMode]?.pendingCommit = task
+                    DispatchQueue.main.asyncAfter(
+                        deadline: .now() + longestPossibleTolerance,
+                        execute: task
+                    )
+                    // Don't run holds — the taps sequence is still in progress.
+                    return
+                }
+                // No longer pattern possible — commit the winner now.
+                commitTaps(mode: winnerMode)
                 return
             }
 
-            let holdDuration = now - pushStartTime
-
-            if holdDuration < holdThreshold {
-                // Short tap — cancel dictation silently, remember for potential double-tap
-                if dictationStarted {
-                    dictationStarted = false
-                    Log.write("DICTATION: CANCEL (short tap \(String(format: "%.0f", holdDuration * 1000))ms)")
-                    DispatchQueue.main.async { [weak self] in self?.onCancel?() }
+            // Step 3: start holds and combos that aren't yet running. Modes
+            // already in `armed` state (hands-free toggle) are skipped — the
+            // user is inside an active hands-free session.
+            for mode in TriggerMode.allCases {
+                guard let pattern = patterns[mode], pattern.enabled,
+                      let state = states[mode] else { continue }
+                if state.armed { continue }
+                switch pattern.kind {
+                case .hold:
+                    guard key == pattern.key, !state.activated else { continue }
+                    if activeMode != nil && activeMode != mode { continue }
+                    state.holdStartTime = now
+                    state.activated = true
+                    activeMode = mode
+                    fireOnKeyDown(for: mode)
+                case .combo(let modifiers):
+                    let required: Set<TriggerKey> = Set([pattern.key] + modifiers)
+                    guard required.contains(key) else { continue }
+                    let allHeld = required.allSatisfy { $0.isPressed(in: fullMask) }
+                    if allHeld && !state.activated {
+                        // Combo completion wins over any in-flight hold (e.g.
+                        // Ctrl-hold fired, then Opt arrived → Ctrl+Opt combo
+                        // supersedes).
+                        cancelProvisionalHolds(exceptMode: mode)
+                        state.activated = true
+                        activeMode = mode
+                        fireOnKeyDown(for: mode)
+                    }
+                case .taps:
+                    break
                 }
-                lastCtrlReleaseTime = now
-            } else {
-                // Long hold release → stop dictation normally
-                dictationStarted = false
-                lastCtrlReleaseTime = 0
-                Log.write("DICTATION: STOP (hold released)")
-                DispatchQueue.main.async { [weak self] in self?.onKeyUp?() }
+            }
+        } else {
+            // Release — finalise holds & combos. HandsFree transitions to
+            // `armed` instead of firing onKeyUp because it's a toggle: you
+            // can't "hold your hands free", you activate & come back later.
+            for mode in TriggerMode.allCases {
+                guard let pattern = patterns[mode], pattern.enabled,
+                      let state = states[mode] else { continue }
+                switch pattern.kind {
+                case .hold(let minMs):
+                    guard key == pattern.key, state.activated else { continue }
+                    let heldMs = Int(max(0, (now - state.holdStartTime) * 1000))
+                    if heldMs < minMs {
+                        // Short press — cancel for all modes (including HF).
+                        state.activated = false
+                        if activeMode == mode { activeMode = nil }
+                        fireOnCancel(for: mode)
+                    } else if mode == .handsFree {
+                        // Long hold release → arm for toggle stop.
+                        state.activated = false
+                        state.armed = true
+                        // activeMode stays set so other modes can't claim it.
+                    } else {
+                        state.activated = false
+                        if activeMode == mode { activeMode = nil }
+                        fireOnKeyUp(for: mode)
+                    }
+                case .combo(let modifiers):
+                    let required: Set<TriggerKey> = Set([pattern.key] + modifiers)
+                    guard required.contains(key) else { continue }
+                    let allHeld = required.allSatisfy { $0.isPressed(in: fullMask) }
+                    if !allHeld && state.activated {
+                        if mode == .handsFree {
+                            // Arm for toggle stop.
+                            state.activated = false
+                            state.armed = true
+                        } else {
+                            state.activated = false
+                            if activeMode == mode { activeMode = nil }
+                            fireOnKeyUp(for: mode)
+                        }
+                    }
+                case .taps:
+                    break
+                }
             }
         }
     }
+
+    /// Actually fire a taps pattern that's been picked as the winner. Called
+    /// either inline (Step 2 commit) or deferred via `pendingCommit`.
+    private func commitTaps(mode: TriggerMode) {
+        guard let state = states[mode] else { return }
+        state.pendingCommit = nil
+        state.tapTimestamps.removeAll()
+        // Clear any other pending commits on the same key (they lost the
+        // disambiguation race).
+        for other in TriggerMode.allCases where other != mode {
+            states[other]?.pendingCommit?.cancel()
+            states[other]?.pendingCommit = nil
+            states[other]?.tapTimestamps.removeAll()
+        }
+        cancelProvisionalHolds(exceptMode: mode)
+        state.armed = true
+        activeMode = mode
+        fireOnKeyDown(for: mode)
+    }
+
+    /// Cancels any `.hold` pattern that fired provisionally on a press but
+    /// was later superseded by a taps/combo activation. Only `.hold` kinds
+    /// are considered "provisional" — armed taps and active combos are
+    /// deliberate activations that don't get preempted.
+    private func cancelProvisionalHolds(exceptMode: TriggerMode) {
+        for mode in TriggerMode.allCases where mode != exceptMode {
+            guard let pattern = patterns[mode],
+                  let state = states[mode], state.activated else { continue }
+            if case .hold = pattern.kind {
+                state.activated = false
+                if activeMode == mode { activeMode = nil }
+                fireOnCancel(for: mode)
+            }
+        }
+    }
+
+    // MARK: - Callback dispatch
+
+    private func fireOnKeyDown(for mode: TriggerMode) {
+        Log.write("Hotkey \(mode.rawValue) ↓")
+        switch mode {
+        case .record, .handsFree:
+            DispatchQueue.main.async { [weak self] in self?.onKeyDown?() }
+        case .search:
+            DispatchQueue.main.async { [weak self] in self?.onSearchKeyDown?() }
+        }
+    }
+
+    private func fireOnKeyUp(for mode: TriggerMode) {
+        Log.write("Hotkey \(mode.rawValue) ↑")
+        switch mode {
+        case .record, .handsFree:
+            DispatchQueue.main.async { [weak self] in self?.onKeyUp?() }
+        case .search:
+            DispatchQueue.main.async { [weak self] in self?.onSearchKeyUp?() }
+        }
+    }
+
+    private func fireOnCancel(for mode: TriggerMode) {
+        Log.write("Hotkey \(mode.rawValue) cancel (short hold)")
+        switch mode {
+        case .record, .handsFree:
+            DispatchQueue.main.async { [weak self] in self?.onCancel?() }
+        case .search:
+            // Search doesn't have a cancel path; the up-on-short-hold would
+            // just paste an empty query — suppress by firing nothing.
+            break
+        }
+    }
+}
+
+// MARK: - PatternState (per-mode scratch state)
+
+/// Mutable scratch space for a single TriggerPattern's matcher. We keep this
+/// as a class so we can mutate via let bindings inside the matcher.
+private final class PatternState {
+    var holdStartTime: TimeInterval = 0
+    var tapTimestamps: [TimeInterval] = []
+    /// True once the activation condition fired — waiting for the matching
+    /// stop event (key release for hold/combo, next tap for taps).
+    var activated: Bool = false
+    /// For .taps only: true after the N-th tap arms the mode — the very next
+    /// press will deactivate it.
+    var armed: Bool = false
+    /// Deferred-commit task set when a shorter taps pattern could have fired
+    /// but might still be outgrown by a longer taps pattern on the same key.
+    /// Cancelled on every subsequent press so we always commit the longest
+    /// gesture the user actually performed.
+    var pendingCommit: DispatchWorkItem?
+}
+
+// MARK: - Mask conversion helpers
+
+/// Distil the modifier set from a CGEvent into our own OptionSet.
+private func maskFromCGEvent(_ event: CGEvent) -> ModifierMask {
+    var mask: ModifierMask = []
+    if event.flags.contains(.maskControl)       { mask.insert(.control)  }
+    if event.flags.contains(.maskAlternate)     { mask.insert(.option)   }
+    if event.flags.contains(.maskShift)         { mask.insert(.shift)    }
+    if event.flags.contains(.maskCommand)       { mask.insert(.command)  }
+    if event.flags.contains(.maskSecondaryFn)   { mask.insert(.function) }
+    return mask
+}
+
+/// Same for NSEvent — used in the accessibility-denied fallback.
+private func maskFromNSEvent(_ event: NSEvent) -> ModifierMask {
+    var mask: ModifierMask = []
+    if event.modifierFlags.contains(.control)  { mask.insert(.control)  }
+    if event.modifierFlags.contains(.option)   { mask.insert(.option)   }
+    if event.modifierFlags.contains(.shift)    { mask.insert(.shift)    }
+    if event.modifierFlags.contains(.command)  { mask.insert(.command)  }
+    if event.modifierFlags.contains(.function) { mask.insert(.function) }
+    return mask
 }

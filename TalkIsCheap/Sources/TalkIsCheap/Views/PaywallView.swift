@@ -159,4 +159,7 @@ extension Notification.Name {
     static let openSettings = Notification.Name("TalkIsCheap.openSettings")
     static let startLocalSetup = Notification.Name("TalkIsCheap.startLocalSetup")
     static let showPaywall = Notification.Name("TalkIsCheap.showPaywall")
+    /// Fired when a TriggerPattern was updated. HotkeyManager listens and
+    /// re-reads patterns so changes take effect immediately.
+    static let triggerPatternsChanged = Notification.Name("TalkIsCheap.triggerPatternsChanged")
 }

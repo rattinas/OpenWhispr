@@ -71,6 +71,57 @@ final class AppSettings: ObservableObject {
     // Recording mode
     @AppStorage("toggleRecordingMode") var toggleRecordingMode: Bool = false
 
+    // MARK: - Custom trigger patterns (record / search / hands-free)
+    //
+    // Each of the three modes has its own user-configurable gesture — key +
+    // kind (hold / taps / combo) + learned inter-tap rhythm. Stored as JSON
+    // strings in UserDefaults; the typed accessors below read & write them
+    // via a Codable round-trip.
+
+    @AppStorage("triggerPattern.record") private var recordPatternJSON: String = ""
+    @AppStorage("triggerPattern.search") private var searchPatternJSON: String = ""
+    @AppStorage("triggerPattern.handsFree") private var handsFreePatternJSON: String = ""
+
+    /// Typed accessor for the record-mode pattern.
+    var recordPattern: TriggerPattern {
+        get { Self.decodePattern(recordPatternJSON) ?? .defaultRecord }
+        set { recordPatternJSON = Self.encodePattern(newValue) ?? "" }
+    }
+    var searchPattern: TriggerPattern {
+        get { Self.decodePattern(searchPatternJSON) ?? .defaultSearch }
+        set { searchPatternJSON = Self.encodePattern(newValue) ?? "" }
+    }
+    var handsFreePattern: TriggerPattern {
+        get { Self.decodePattern(handsFreePatternJSON) ?? .defaultHandsFree }
+        set { handsFreePatternJSON = Self.encodePattern(newValue) ?? "" }
+    }
+
+    func pattern(for mode: TriggerMode) -> TriggerPattern {
+        switch mode {
+        case .record:    return recordPattern
+        case .search:    return searchPattern
+        case .handsFree: return handsFreePattern
+        }
+    }
+
+    func setPattern(_ pattern: TriggerPattern, for mode: TriggerMode) {
+        switch mode {
+        case .record:    recordPattern = pattern
+        case .search:    searchPattern = pattern
+        case .handsFree: handsFreePattern = pattern
+        }
+        NotificationCenter.default.post(name: .triggerPatternsChanged, object: nil)
+    }
+
+    private static func decodePattern(_ json: String) -> TriggerPattern? {
+        guard !json.isEmpty, let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(TriggerPattern.self, from: data)
+    }
+    private static func encodePattern(_ pattern: TriggerPattern) -> String? {
+        guard let data = try? JSONEncoder().encode(pattern) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     // Command Mode — double-tap voice search extended with connected
     // services (Shopify / Stripe / GitHub / Google Analytics / …).
     // Staged rollout: flip on with:

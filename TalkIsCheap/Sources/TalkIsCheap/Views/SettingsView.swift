@@ -8,8 +8,6 @@ struct SettingsView: View {
     @State private var newScenarioName = ""
     @State private var newScenarioPrompt = ""
     @State private var editingPromptFor: PolishMode?
-    @State private var isCapturingHotkey = false
-    @State private var hotkeyDisplay = "Control"
     @State private var autoStartEnabled = LoginItemManager.isEnabled
     @State private var showingFeedback = false
 
@@ -20,6 +18,7 @@ struct SettingsView: View {
                 apiKeysTab.tabItem { Label("API Keys", systemImage: "key") }.tag("keys")
             }
             DictionaryView().tabItem { Label("Dictionary", systemImage: "book") }.tag("dictionary")
+            HotkeySettingsView().tabItem { Label("Hotkeys", systemImage: "keyboard") }.tag("hotkeys")
             modesTab.tabItem { Label("Modes", systemImage: "sparkles") }.tag("modes")
             if settings.commandsUnlocked {
                 ConnectedServicesView().tabItem { Label("Services", systemImage: "link.circle") }.tag("services")
@@ -212,64 +211,41 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("Hotkey") {
+            Section("Hotkeys") {
+                // Live summary of the three patterns the user configured.
+                let record = settings.recordPattern
+                let search = settings.searchPattern
+                let handsFree = settings.handsFreePattern
+
+                patternSummaryRow(
+                    icon: TriggerMode.record.sfSymbol,
+                    title: "Record",
+                    enabled: record.enabled,
+                    desc: record.kind.descriptionWith(primary: record.key)
+                )
+                patternSummaryRow(
+                    icon: TriggerMode.search.sfSymbol,
+                    title: "Command Mode",
+                    enabled: search.enabled,
+                    desc: search.kind.descriptionWith(primary: search.key)
+                )
+                patternSummaryRow(
+                    icon: TriggerMode.handsFree.sfSymbol,
+                    title: "Hands-Free",
+                    enabled: handsFree.enabled,
+                    desc: handsFree.kind.descriptionWith(primary: handsFree.key)
+                )
+
                 HStack {
-                    Text("Current:")
-                    Text(hotkeyDisplay)
-                        .padding(.horizontal, 10).padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.15))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .font(.system(.body, design: .monospaced))
                     Spacer()
-                    Button(isCapturingHotkey ? "Press any key..." : "Change") {
-                        isCapturingHotkey = true
-                        NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
-                            guard self.isCapturingHotkey else { return event }
-                            let keyName: String?
-                            if event.type == .flagsChanged {
-                                if event.modifierFlags.contains(.control) { keyName = "Control" }
-                                else if event.modifierFlags.contains(.option) { keyName = "Option" }
-                                else { return event }
-                            } else {
-                                switch event.keyCode {
-                                case 0x60: keyName = "F5"; case 0x61: keyName = "F6"
-                                case 0x64: keyName = "F8"; case 0x65: keyName = "F9"
-                                case 0x6D: keyName = "F10"; case 0x67: keyName = "F11"
-                                default: keyName = event.charactersIgnoringModifiers?.uppercased()
-                                }
-                            }
-                            if let name = keyName {
-                                self.hotkeyDisplay = name
-                                self.settings.hotkeyCode = Int(event.keyCode)
-                                self.isCapturingHotkey = false
-                            }
-                            return nil
-                        }
+                    Button {
+                        selectedTab = "hotkeys"
+                    } label: {
+                        Label("Configure hotkeys", systemImage: "keyboard")
                     }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
-                Toggle("Toggle mode (press once to start, again to stop)", isOn: $settings.toggleRecordingMode)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Dictation").font(.caption.bold())
-                    if settings.toggleRecordingMode {
-                        Label("**Press** your hotkey → start recording", systemImage: "hand.tap")
-                        Label("**Press again** → stop and paste", systemImage: "hand.tap.fill")
-                    } else {
-                        Label("**Hold** your hotkey → record → release → paste", systemImage: "hand.tap")
-                        Label("**Hold** hotkey **+ Shift** → hands-free dictation", systemImage: "hand.tap.fill")
-                    }
-
-                    Divider().padding(.vertical, 4)
-
-                    Text("Voice Search").font(.caption.bold())
-                    Label("**Double-tap** your hotkey → ask anything", systemImage: "magnifyingglass")
-                    Text("Requires Brave Search API key (free)")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                }
-                .font(.caption).foregroundStyle(.secondary)
-                Text("Restart app after changing dictation hotkey.")
-                    .font(.caption2).foregroundStyle(.tertiary)
             }
 
             Section("System") {
@@ -299,6 +275,27 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Hotkey summary row (used in General tab)
+
+    @ViewBuilder
+    private func patternSummaryRow(icon: String, title: String, enabled: Bool, desc: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(enabled ? .primary : .tertiary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption.bold())
+                    .foregroundStyle(enabled ? .primary : .tertiary)
+                Text(enabled ? desc : "Disabled")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 2)
     }
 
     // MARK: - API Keys
