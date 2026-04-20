@@ -587,6 +587,13 @@ final class AppState: ObservableObject {
                     do {
                         Log.write("Routing voice query to connector: \(connector.name)")
                         let result = try await registry.query(connector: connector, intent: intent)
+                        // Flatten rawData into a text context so Claude can
+                        // reason over the raw email / event / order data
+                        // during follow-up chat.
+                        let ctxData = (try? JSONSerialization.data(
+                            withJSONObject: result.rawData,
+                            options: [.prettyPrinted]
+                        )).flatMap { String(data: $0, encoding: .utf8) }
                         SearchPanelManager.shared.showResult(SearchResult(
                             query: query,
                             answer: result.answer,
@@ -595,7 +602,8 @@ final class AppState: ObservableObject {
                             widgetUrl: nil,
                             connectorId: result.connectorId,
                             connectorName: result.connectorName,
-                            connectorIcon: result.icon
+                            connectorIcon: result.icon,
+                            followUpContext: ctxData
                         ))
                         SoundFeedback.done()
                         status = .ready

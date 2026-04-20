@@ -16,10 +16,14 @@ struct SearchResult {
     let connectorId: String?
     let connectorName: String?
     let connectorIcon: String?
+    /// Raw context the connector built (e.g. full email thread JSON) so
+    /// follow-up chat can reason over the original data without another
+    /// API round-trip. Not displayed.
+    let followUpContext: String?
 
     init(query: String, answer: String, sources: [SearchSource], images: [String],
          widgetUrl: String?, connectorId: String? = nil, connectorName: String? = nil,
-         connectorIcon: String? = nil) {
+         connectorIcon: String? = nil, followUpContext: String? = nil) {
         self.query = query
         self.answer = answer
         self.sources = sources
@@ -28,6 +32,7 @@ struct SearchResult {
         self.connectorId = connectorId
         self.connectorName = connectorName
         self.connectorIcon = connectorIcon
+        self.followUpContext = followUpContext
     }
 }
 
