@@ -169,10 +169,17 @@ final class PipedreamClient: NSObject {
         }
     }
 
-    func apps() async throws -> [AppInfo] {
-        guard let req = authorizedRequest(
-            url: Self.baseURL.appendingPathComponent("pipedream/apps")
-        ) else { throw PDError.notLicensed }
+    func apps(query: String? = nil) async throws -> [AppInfo] {
+        var comps = URLComponents(
+            url: Self.baseURL.appendingPathComponent("pipedream/apps"),
+            resolvingAgainstBaseURL: false
+        )!
+        if let query, !query.trimmingCharacters(in: .whitespaces).isEmpty {
+            comps.queryItems = [URLQueryItem(name: "q", value: query.trimmingCharacters(in: .whitespaces))]
+        }
+        guard let req = authorizedRequest(url: comps.url!) else {
+            throw PDError.notLicensed
+        }
         let (data, resp) = try await URLSession.shared.data(for: req)
         if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
             let msg = String(data: data, encoding: .utf8) ?? ""
