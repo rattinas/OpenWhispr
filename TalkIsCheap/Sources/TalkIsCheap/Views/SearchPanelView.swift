@@ -173,6 +173,22 @@ final class SearchPanelManager: ObservableObject {
 
     @Published var isExecutingAction = false
 
+    /// Remove a single pending action from the result (user rejected the
+    /// drafted email but wants to keep the panel + the other drafts).
+    func dismissPending(id: UUID) {
+        guard case .result(let base) = state else { return }
+        let remaining = base.pendingActions.filter { $0.id != id }
+        let updated = SearchResult(
+            query: base.query, answer: base.answer,
+            sources: base.sources, images: base.images, widgetUrl: base.widgetUrl,
+            connectorId: base.connectorId, connectorName: base.connectorName,
+            connectorIcon: base.connectorIcon, followUpContext: base.followUpContext,
+            pendingActions: remaining
+        )
+        state = .result(updated)
+        lastResult = updated
+    }
+
     /// Actually execute the agent-prepared write action using the current
     /// (possibly user-edited) field values. Replaces the result with a
     /// success confirmation or surfaces an error in the chat.
@@ -251,13 +267,16 @@ final class SearchPanelManager: ObservableObject {
                 return
             }
 
-            // Build a success answer + replace the result so the confirm
-            // UI disappears.
-            let successMd = buildSuccessConfirmation(action: action, response: respJson)
+            // Drop JUST the one we executed from the list so the other
+            // pending replies remain visible. Also append a lightweight
+            // success line to the top of the answer.
             if case .result(let base) = state {
+                let remaining = base.pendingActions.filter { $0.id != action.id }
+                let successMd = buildSuccessConfirmation(action: action, response: respJson)
+                let newAnswer = successMd + "\n\n" + base.answer
                 let updated = SearchResult(
                     query: base.query,
-                    answer: successMd,
+                    answer: newAnswer,
                     sources: base.sources,
                     images: base.images,
                     widgetUrl: base.widgetUrl,
@@ -265,7 +284,7 @@ final class SearchPanelManager: ObservableObject {
                     connectorName: base.connectorName,
                     connectorIcon: base.connectorIcon,
                     followUpContext: base.followUpContext,
-                    pendingAction: nil
+                    pendingActions: remaining
                 )
                 state = .result(updated)
                 lastResult = updated
@@ -553,8 +572,10 @@ struct SearchResultView: View {
                         }
                     }
 
-                    // Pending agent action: editable preview + Confirm / Cancel
-                    if let pending = result.pendingAction {
+                    // One editable card per pending agent action. For triage
+                    // this is one card per urgent email; for send/create
+                    // this is a single card.
+                    ForEach(result.pendingActions) { pending in
                         pendingActionCard(pending)
                     }
 
@@ -657,14 +678,12 @@ struct SearchResultView: View {
             }
 
             HStack {
-                Button(role: .cancel) {
-                    // Dismiss the pending action by clearing the panel.
-                    manager.hide()
+                Button(role: .destructive) {
+                    manager.dismissPending(id: action.id)
                 } label: {
-                    Text(action.kind.contains(".send") ? "Verwerfen" : "Verwerfen")
+                    Text("Verwerfen")
                         .font(.system(size: 13))
                 }
-                .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
@@ -683,7 +702,6 @@ struct SearchResultView: View {
                             .font(.system(size: 13, weight: .semibold))
                     }
                 }
-                .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(manager.isExecutingAction)
             }

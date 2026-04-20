@@ -58,12 +58,17 @@ struct SearchResult {
     let followUpContext: String?
     /// Set by agent-style connectors (Gmail send, Calendar create) that
     /// prepared a write action but won't execute until the user confirms.
-    let pendingAction: PendingAction?
+    /// Multiple can be returned at once (e.g. triage produces one draft
+    /// per urgent email, each rendered as its own editable card).
+    let pendingActions: [PendingAction]
+
+    // Convenience accessor for the single-action case.
+    var pendingAction: PendingAction? { pendingActions.first }
 
     init(query: String, answer: String, sources: [SearchSource], images: [String],
          widgetUrl: String?, connectorId: String? = nil, connectorName: String? = nil,
          connectorIcon: String? = nil, followUpContext: String? = nil,
-         pendingAction: PendingAction? = nil) {
+         pendingActions: [PendingAction] = []) {
         self.query = query
         self.answer = answer
         self.sources = sources
@@ -73,7 +78,19 @@ struct SearchResult {
         self.connectorName = connectorName
         self.connectorIcon = connectorIcon
         self.followUpContext = followUpContext
-        self.pendingAction = pendingAction
+        self.pendingActions = pendingActions
+    }
+
+    // Back-compat convenience init taking a single optional action.
+    init(query: String, answer: String, sources: [SearchSource], images: [String],
+         widgetUrl: String?, connectorId: String? = nil, connectorName: String? = nil,
+         connectorIcon: String? = nil, followUpContext: String? = nil,
+         pendingAction: PendingAction?) {
+        self.init(query: query, answer: answer, sources: sources, images: images,
+                  widgetUrl: widgetUrl, connectorId: connectorId,
+                  connectorName: connectorName, connectorIcon: connectorIcon,
+                  followUpContext: followUpContext,
+                  pendingActions: pendingAction.map { [$0] } ?? [])
     }
 }
 

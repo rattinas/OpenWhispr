@@ -182,7 +182,7 @@ final class GoogleCalendarConnector: Connector {
             ],
             timeRange: intent.timeRange,
             cachedAt: Date(),
-            pendingAction: pending
+            pendingActions: [pending]
         )
     }
 
