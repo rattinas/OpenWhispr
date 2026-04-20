@@ -45,6 +45,11 @@ final class SearchService {
         //    getting a generic web result.
         var connectorErrorNote: String? = nil
         if AppSettings.shared.commandsUnlocked {
+            // Make sure the Pipedream account list is loaded — without this,
+            // a voice query fired before the user opens Settings → Services
+            // would think nothing is connected and fall through to web search.
+            await PipedreamCatalog.shared.ensureAccountsLoaded()
+
             let intent = IntentDetector.detect(from: query)
             let registry = ConnectorRegistry.shared
             if let connector = registry.connector(for: intent) {
