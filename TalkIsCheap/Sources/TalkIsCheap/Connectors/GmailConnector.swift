@@ -49,21 +49,19 @@ final class GmailConnector: Connector {
 
         let q = intent.rawQuery.lowercased()
 
-        // Triage path: open-ended questions about what needs attention.
-        // Picks up "urgent", "dringend", "antworten", "reply", "priority",
-        // "important", "muss ich", "wichtig" — runs Claude over a rich
-        // inbox snapshot (labels, snippets, read state, thread position)
-        // so it can answer questions like "welche mails muss ich dringend
-        // beantworten" with actual reasoning.
-        let triageMarkers = [
-            "dringend", "wichtig", "priority", "urgent", "important",
-            "muss ich beantworten", "muss antworten", "need to reply",
-            "needs answer", "needs an answer", "pending", "offene",
-            "unbeantwortet", "follow up", "follow-up", "action needed",
-            "welche mails", "welche e-mails", "which emails", "which mails",
-            "what should i", "was soll ich"
+        // Fire triage whenever the user mentions emails AND any action
+        // word — covers "auf welche Mails muss ich antworten", "welche
+        // emails sind wichtig", "should I reply to anything", etc.
+        let emailKeywords = ["mail", "mails", "email", "emails", "inbox", "posteingang", "nachricht", "messages"]
+        let actionKeywords = [
+            "antworten", "beantworten", "reply", "answer", "respond",
+            "wichtig", "urgent", "dringend", "priority", "priorisieren",
+            "muss", "should", "action", "folgen", "drauf", "worauf",
+            "welche", "which", "wartet", "wait"
         ]
-        if triageMarkers.contains(where: { q.contains($0) }) {
+        let hasEmail = emailKeywords.contains { q.contains($0) }
+        let hasAction = actionKeywords.contains { q.contains($0) }
+        if hasEmail && hasAction {
             return try await smartTriage(intent: intent)
         }
 
@@ -111,7 +109,10 @@ final class GmailConnector: Connector {
             return simpleResult("📭 **Inbox is clear** — no unread, starred, important or action-labelled messages.", intent: intent, raw: [:])
         }
 
-        // Fetch metadata for each message in parallel.
+        // Fetch FULL message data (not just metadata) for each message so
+        // Claude has actual body text to reason over. Without bodies it
+        // can only recite subject lines, and later "draft a reply" in
+        // the follow-up chat has nothing to base the reply on.
         struct InboxMsg {
             let id: String
             let from: String
@@ -120,41 +121,51 @@ final class GmailConnector: Connector {
             let date: String
             let labelNames: [String]
             let isUnread: Bool
+            let body: String
         }
-        let ids = messageStubs.prefix(20).compactMap { $0["id"] as? String }
+        let ids = messageStubs.prefix(15).compactMap { $0["id"] as? String }
         var messages: [InboxMsg] = []
-        try await withThrowingTaskGroup(of: InboxMsg?.self) { group in
-            for id in ids {
+        try await withThrowingTaskGroup(of: (Int, InboxMsg?).self) { group in
+            for (idx, id) in ids.enumerated() {
                 group.addTask { [self] in
-                    let path = "/gmail/v1/users/me/messages/\(id)?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date"
+                    let path = "/gmail/v1/users/me/messages/\(id)?format=full"
                     guard let raw = try? await self.apiGet(path: path),
                           let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any]
-                    else { return nil }
-                    let headers = ((obj["payload"] as? [String: Any])?["headers"] as? [[String: Any]]) ?? []
+                    else { return (idx, nil) }
+                    let payload = obj["payload"] as? [String: Any] ?? [:]
+                    let headers = (payload["headers"] as? [[String: Any]]) ?? []
                     func header(_ name: String) -> String {
                         headers.first { ($0["name"] as? String)?.lowercased() == name.lowercased() }?["value"] as? String ?? ""
                     }
                     let labelIds = (obj["labelIds"] as? [String]) ?? []
                     let names = labelIds.compactMap { labelNameById[$0] }
-                    return InboxMsg(
+                    let body = self.extractPlainBody(payload: payload)
+                    let snippet = (obj["snippet"] as? String) ?? ""
+                    return (idx, InboxMsg(
                         id: id,
                         from: header("From"),
                         subject: header("Subject").isEmpty ? "(no subject)" : header("Subject"),
-                        snippet: (obj["snippet"] as? String) ?? "",
+                        snippet: snippet,
                         date: header("Date"),
                         labelNames: names,
-                        isUnread: labelIds.contains("UNREAD")
-                    )
+                        isUnread: labelIds.contains("UNREAD"),
+                        body: body
+                    ))
                 }
             }
-            for try await msg in group {
-                if let msg { messages.append(msg) }
+            // Collect in fetch order then sort back to original index so the
+            // list reflects Gmail's recency ordering regardless of task
+            // completion order.
+            var collected: [(Int, InboxMsg)] = []
+            for try await pair in group {
+                if let msg = pair.1 { collected.append((pair.0, msg)) }
             }
+            messages = collected.sorted { $0.0 < $1.0 }.map { $0.1 }
         }
 
         // Build Claude context + ask for a triage.
-        var ctx = "Here's a snapshot of the user's inbox. Analyse it and answer their question.\n\n"
-        ctx += "## Message list (recent unread + starred + important + action-labelled)\n\n"
+        var ctx = "Here's a snapshot of the user's inbox with full email bodies. Analyse it and answer their question.\n\n"
+        ctx += "## Message list (ranked by Gmail recency within the search scope)\n\n"
         for (i, m) in messages.enumerated() {
             ctx += "### [\(i + 1)] \(m.subject)\n"
             ctx += "- **From:** \(cleanFrom(m.from))\n"
@@ -162,31 +173,40 @@ final class GmailConnector: Connector {
             if !m.labelNames.isEmpty {
                 ctx += "- **Labels:** \(m.labelNames.joined(separator: ", "))\n"
             }
-            ctx += "- **Unread:** \(m.isUnread ? "yes" : "no")\n"
-            if !m.snippet.isEmpty {
-                let trimmed = m.snippet.count > 300 ? String(m.snippet.prefix(300)) + "…" : m.snippet
-                ctx += "- **Snippet:** \(trimmed)\n"
-            }
-            ctx += "\n"
+            ctx += "- **Unread:** \(m.isUnread ? "yes" : "no")\n\n"
+            let bodyText = m.body.isEmpty ? m.snippet : m.body
+            let cleaned = bodyText
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = cleaned.count > 1500 ? String(cleaned.prefix(1500)) + "\n[…truncated]" : cleaned
+            ctx += "Body:\n\(trimmed)\n\n"
         }
 
         let systemPrompt = """
-        You are a voice-first email triage assistant. The user will ask a \
-        natural-language question about their inbox (e.g. "welche mails muss \
-        ich beantworten?", "was ist wichtig?"). Analyse the provided inbox \
-        snapshot and respond in the user's language.
+        You are a voice-first email triage assistant. The user asks a \
+        natural-language question about their inbox (e.g. "welche mails \
+        muss ich beantworten?", "was ist wichtig?"). You have the full \
+        text of their 15 most relevant emails — use it.
 
-        RULES:
-        - Lead with the 3–5 most urgent items, highest priority first.
-        - For each, write: a one-line reason (why it matters), who sent it, \
-          and what action is expected. Be SHORT. No padding.
-        - User labels like "needs answer", "todo", "dringend", "waiting" are \
-          strong urgency signals — respect them.
-        - Starred / Important flags mean "user marked this", so also strong.
-        - Unread + labelled is more urgent than read + labelled.
-        - If nothing truly urgent, say so clearly in one sentence.
-        - Output valid Markdown. Use bullet points. Bold senders and subjects.
-        - Never invent content. Quote snippets when they help.
+        CRITICAL:
+        - Respond in the EXACT SAME LANGUAGE as the user's question. If \
+          the question is in German, reply in German. English → English. \
+          Never switch mid-answer.
+        - Pick the top 3–5 truly urgent items. Stay focused; skip the rest.
+        - NUMBER each item [1], [2], [3] matching the message list so the \
+          user can say "reply to #2" or "more on #1" later.
+        - For each item: one line on who sent it + what they need + why \
+          it's urgent. Quote ≤15 words from the body if it clarifies.
+        - When the body clearly asks a question or requests an action, \
+          include a short suggested reply draft (2–4 lines) under the \
+          item, marked "Vorschlag:" / "Suggested reply:" in the user's \
+          language.
+        - If the query is open-ended ("was sollte ich zuerst angehen"), \
+          still produce the numbered list + suggested replies.
+        - Don't invent content. Empty of urgent items → say so in one \
+          sentence.
+        - Output clean Markdown. Bold senders. Use bullet sub-lines \
+          sparingly.
         """
 
         let userContent = """
@@ -201,12 +221,29 @@ final class GmailConnector: Connector {
             model: "claude-haiku-4-5-20251001"
         )
 
+        // Pass the FULL context forward to follow-up chat so "draft reply
+        // to #2" or "make the tone friendlier" has the original email to
+        // work from.
+        let rawContext: [String: Any] = [
+            "messages": messages.map { m in
+                [
+                    "index": (messages.firstIndex(where: { $0.id == m.id }) ?? 0) + 1,
+                    "from": m.from,
+                    "subject": m.subject,
+                    "date": m.date,
+                    "labels": m.labelNames,
+                    "unread": m.isUnread,
+                    "body": m.body.isEmpty ? m.snippet : m.body,
+                ]
+            }
+        ]
+
         return ConnectorResult(
             connectorId: id,
             connectorName: name,
             icon: icon,
             answer: answer,
-            rawData: ["messages": messages.count, "labels": labels.count],
+            rawData: rawContext,
             timeRange: intent.timeRange,
             cachedAt: Date()
         )
