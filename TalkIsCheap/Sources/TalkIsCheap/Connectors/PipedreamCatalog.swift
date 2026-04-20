@@ -14,6 +14,25 @@ final class PipedreamCatalog: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var loadError: String?
 
+    /// Run a live-search against Pipedream's full catalogue and REPLACE
+    /// the published `apps` with the results. Used when the user types
+    /// into the search field so they can discover less common apps.
+    func search(_ query: String) async {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            await refresh()
+            return
+        }
+        isLoading = true
+        loadError = nil
+        do {
+            let result = try await PipedreamClient.shared.apps(query: query)
+            self.apps = result
+        } catch {
+            self.loadError = "Search failed: \(error.localizedDescription)"
+        }
+        isLoading = false
+    }
+
     func refresh() async {
         isLoading = true
         loadError = nil

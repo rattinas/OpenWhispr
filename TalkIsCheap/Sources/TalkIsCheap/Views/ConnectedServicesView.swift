@@ -8,6 +8,7 @@ struct ConnectedServicesView: View {
     @State private var oauthError: String?
     @State private var isOAuthing = false
     @State private var search = ""
+    @State private var searchTask: Task<Void, Never>?
 
     private var activePack: IndustryPack? {
         guard !settings.industryPack.isEmpty else { return nil }
@@ -26,10 +27,30 @@ struct ConnectedServicesView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
-                    TextField("Filter services…", text: $search)
+                    TextField("Search any of 3000+ apps…", text: $search)
                         .textFieldStyle(.plain)
+                        .onChange(of: search) { _, newValue in
+                            // Debounce: wait 300ms after typing stops,
+                            // then hit Pipedream's live search.
+                            searchTask?.cancel()
+                            searchTask = Task {
+                                try? await Task.sleep(nanoseconds: 300_000_000)
+                                if Task.isCancelled { return }
+                                await catalog.search(newValue)
+                            }
+                        }
                     if catalog.isLoading {
                         ProgressView().scaleEffect(0.6)
+                    } else if !search.isEmpty {
+                        Button {
+                            search = ""
+                            searchTask?.cancel()
+                            Task { await catalog.refresh() }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Clear")
                     } else {
                         Button {
                             Task { await catalog.refresh() }
