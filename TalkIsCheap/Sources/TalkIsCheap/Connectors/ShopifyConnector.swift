@@ -25,7 +25,7 @@ final class ShopifyConnector: Connector {
     let serviceNames: [String] = ["shopify"]
     let category: ConnectorCategory = .ecommerce
     let nangoProvider: String? = "shopify"
-    let pipedreamAppSlug: String? = "shopify_developer_app"
+    let pipedreamAppSlug: String? = "shopify"
 
     let setupGuide: [SetupStep] = [
         SetupStep(
@@ -73,6 +73,7 @@ final class ShopifyConnector: Connector {
 
     @MainActor
     var isConnected: Bool {
+        if isPipedreamConnected { return true }
         if isNangoConnected { return true }
         guard let domain = shopDomain, let token = accessToken else { return false }
         return !domain.isEmpty && !token.isEmpty
@@ -113,7 +114,12 @@ final class ShopifyConnector: Connector {
             + "&fields=id,total_price,financial_status,currency,created_at,line_items"
 
         let data: Data
-        if isNangoConnected {
+        if isPipedreamConnected {
+            // Pipedream's Shopify proxy resolves the shop domain from the
+            // connected account automatically — the host in the URL is
+            // substituted server-side.
+            data = try await pipedreamProxy(url: "https://{shop}.myshopify.com\(path)")
+        } else if isNangoConnected {
             data = try await nangoProxy(path: path)
         } else {
             guard let domain = shopDomain, !domain.isEmpty else {
