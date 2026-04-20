@@ -6,6 +6,7 @@ struct ConnectedServicesView: View {
     @State private var connectingApp: PipedreamClient.AppInfo?
     @State private var oauthError: String?
     @State private var isOAuthing = false
+    @State private var showingGmailTriage = false
 
     var body: some View {
         Form {
@@ -76,6 +77,9 @@ struct ConnectedServicesView: View {
         )) { wrapper in
             connectSheet(app: wrapper.app)
         }
+        .sheet(isPresented: $showingGmailTriage) {
+            GmailTriageSettings()
+        }
     }
 
     // MARK: - Lists
@@ -104,6 +108,17 @@ struct ConnectedServicesView: View {
                     .foregroundStyle(.green)
             }
             Spacer()
+            // Per-service settings entry point (currently: Gmail triage labels).
+            if account.appSlug.lowercased() == "gmail" {
+                Button {
+                    showingGmailTriage = true
+                } label: {
+                    Image(systemName: "tag.circle")
+                        .font(.system(size: 15))
+                }
+                .buttonStyle(.borderless)
+                .help("Choose which labels the reply-triage agent should pick up")
+            }
             Button(role: .destructive) {
                 Task { await disconnect(account) }
             } label: {

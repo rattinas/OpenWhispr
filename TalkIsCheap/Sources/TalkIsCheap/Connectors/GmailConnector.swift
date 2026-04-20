@@ -279,13 +279,24 @@ final class GmailConnector: Connector {
             "erledig", "rückmeld",
             "priority", "priorität",
         ]
-        let actionableLabelNames: [String] = labels
-            .map { $0.name }
-            .filter { label in
-                let n = label.lowercased()
-                return actionableHints.contains { n.contains($0) }
-            }
-        Log.write("Gmail triage: matched actionable user labels: \(actionableLabelNames)")
+        // 2a. User's explicit choice takes precedence. If they've picked
+        //     specific labels in Settings → Gmail triage, use ONLY those
+        //     (intersect with actually-existing labels so a stale choice
+        //     doesn't break the query).
+        let explicitSelection = AppSettings.shared.gmailTriageLabelList
+        let availableNames = Set(labels.map { $0.name })
+        let actionableLabelNames: [String]
+        if !explicitSelection.isEmpty {
+            actionableLabelNames = explicitSelection.filter { availableNames.contains($0) }
+        } else {
+            actionableLabelNames = labels
+                .map { $0.name }
+                .filter { label in
+                    let n = label.lowercased()
+                    return actionableHints.contains { n.contains($0) }
+                }
+        }
+        Log.write("Gmail triage: using labels \(actionableLabelNames) (explicit=\(!explicitSelection.isEmpty))")
 
         // 3. Build the Gmail search query:
         //    a) user's own actionable labels (strongest signal)
