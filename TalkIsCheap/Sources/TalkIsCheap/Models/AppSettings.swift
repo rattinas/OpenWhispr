@@ -1,6 +1,11 @@
 import Foundation
 import SwiftUI
 
+/// Total free-trial uses a new user gets across ALL event types. Must match
+/// the server-side constant `TRIAL_USES_LIMIT` in `src/lib/quota.ts`. When
+/// bumping this, also run the DB migration that raises existing rows.
+let TRIAL_USES_LIMIT = 100
+
 /// Central settings store, persisted to UserDefaults with @AppStorage
 final class AppSettings: ObservableObject {
     static let shared = AppSettings()
@@ -48,7 +53,7 @@ final class AppSettings: ObservableObject {
     // Subscription & Proxy Mode
     @AppStorage("tier") var tier: String = ""  // "trial", "lifetime", "pro_monthly", "pro_annual"
     @AppStorage("useCloudProxy") var useCloudProxy: Bool = false
-    @AppStorage("trialUsesRemaining") var trialUsesRemaining: Int = 10
+    @AppStorage("trialUsesRemaining") var trialUsesRemaining: Int = TRIAL_USES_LIMIT
     @AppStorage("subscriptionStatus") var subscriptionStatus: String = ""
     @AppStorage("currentPeriodEnd") var currentPeriodEnd: String = ""
 

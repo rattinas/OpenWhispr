@@ -361,7 +361,7 @@ enum ProxyClient {
             let licenseKey = json["licenseKey"] as? String ?? ""
             let token = json["activationToken"] as? String ?? ""
             let activatedAt = json["activatedAt"] as? String ?? ""
-            let trialUses = json["trialUsesRemaining"] as? Int ?? 10
+            let trialUses = json["trialUsesRemaining"] as? Int ?? TRIAL_USES_LIMIT
 
             await MainActor.run {
                 let settings = AppSettings.shared

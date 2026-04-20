@@ -4,6 +4,7 @@ import Foundation
 
 enum TimeRange: Equatable {
     case today
+    case tomorrow
     case yesterday
     case thisWeek
     case lastWeek
@@ -17,6 +18,8 @@ enum TimeRange: Equatable {
         switch self {
         case .today:
             return cal.startOfDay(for: now)
+        case .tomorrow:
+            return cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
         case .yesterday:
             return cal.startOfDay(for: cal.date(byAdding: .day, value: -1, to: now)!)
         case .thisWeek:
@@ -44,6 +47,8 @@ enum TimeRange: Equatable {
         switch self {
         case .today:
             return now
+        case .tomorrow:
+            return cal.date(byAdding: .day, value: 2, to: cal.startOfDay(for: now))!
         case .yesterday:
             return cal.startOfDay(for: now)
         case .thisWeek:
@@ -64,6 +69,7 @@ enum TimeRange: Equatable {
     var displayName: String {
         switch self {
         case .today: return "today"
+        case .tomorrow: return "tomorrow"
         case .yesterday: return "yesterday"
         case .thisWeek: return "this week"
         case .lastWeek: return "last week"

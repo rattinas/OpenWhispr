@@ -10,7 +10,7 @@ struct PaywallView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(.orange)
 
-            Text("You've used all 10 free uses!")
+            Text("You've used all \(TRIAL_USES_LIMIT) free uses!")
                 .font(.title2.bold())
 
             Text("Pick how you want to continue:")

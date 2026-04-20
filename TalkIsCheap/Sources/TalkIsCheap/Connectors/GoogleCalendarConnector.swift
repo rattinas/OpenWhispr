@@ -17,7 +17,13 @@ final class GoogleCalendarConnector: Connector {
         "meetings", "event", "events", "appointment", "appointments",
         "nächster termin", "next meeting", "heute", "today", "morgen",
         "tomorrow", "diese woche", "this week", "schedule",
-        "was steht an", "what's on"
+        "was steht an", "what's on",
+        // Free-slot / availability triggers
+        "slot", "slots", "freie zeit", "freier slot", "freien slot",
+        "wann habe ich zeit", "wann hab ich zeit", "wann bin ich frei",
+        "wann passt", "availability", "verfuegbar", "verfügbar",
+        "free time", "am i free", "when am i free", "find a time",
+        "freien termin", "free slot",
     ]
     let serviceNames: [String] = ["google calendar", "calendar", "kalender"]
     let category: ConnectorCategory = .productivity
@@ -41,6 +47,24 @@ final class GoogleCalendarConnector: Connector {
         guard isConnected else { throw ConnectorError.notConnected(name) }
 
         let q = intent.rawQuery.lowercased()
+
+        // "Free slot" intent must win over "create" — the user says things like
+        // "find me a free slot tomorrow and schedule it" and we want to first
+        // show gaps, then let them confirm.
+        let freeSlotMarkers = [
+            "freie zeit", "freier slot", "freien slot", "freies zeitfenster",
+            "freien termin", "freier termin",
+            "wann habe ich zeit", "wann hab ich zeit", "wann bin ich frei",
+            "wann passt", "wann ist zeit", "wann bin ich verfuegbar",
+            "wann bin ich verfügbar", "verfuegbarkeit", "verfügbarkeit",
+            "free slot", "free slots", "free time", "am i free",
+            "when am i free", "find a time", "find me a time",
+            "find a slot", "find me a slot", "availability", "any openings",
+        ]
+        if freeSlotMarkers.contains(where: { q.contains($0) }) {
+            return try await findFreeSlot(intent: intent)
+        }
+
         let createMarkers = [
             "erstelle", "erstell ", "ersteller",
             "neuer termin", "neue termin", "neuen termin", "neuer meeting", "neues meeting",
@@ -186,6 +210,243 @@ final class GoogleCalendarConnector: Connector {
         )
     }
 
+    // MARK: - Find free slot
+
+    private func findFreeSlot(intent: ConnectorIntent) async throws -> ConnectorResult {
+        let now = Date()
+        let cal = Calendar.current
+        let tz = TimeZone.current
+        let isGerman = looksGerman(intent.rawQuery)
+
+        // 1. Use Claude Haiku to extract day + duration + time window from the raw query.
+        let nowISO = ISO8601DateFormatter().string(from: now)
+        let system = """
+        You extract a free-slot search specification from a natural-language \
+        calendar query. Return ONLY strict JSON, no prose, no markdown fences:
+        {
+          "dateISO": string (YYYY-MM-DD for the day to search),
+          "durationMinutes": number (default 30 if unspecified),
+          "earliestTime": string (HH:MM 24h, default "09:00"),
+          "latestTime": string (HH:MM 24h, default "18:00")
+        }
+        Current moment: \(nowISO). User's timezone: \(tz.identifier).
+        "heute"/"today" = today. "morgen"/"tomorrow" = tomorrow. \
+        "übermorgen"/"day after tomorrow" = +2 days. \
+        "nächste Woche"/"next week" = next Monday. \
+        If a duration like "30 min", "eine Stunde", "1h", "zwei Stunden" is present, \
+        use that. Minimum 15, cap at 480.
+        """
+        let extracted = (try? await ProxyClient.polish(
+            text: intent.rawQuery,
+            systemPrompt: system,
+            model: "claude-haiku-4-5-20251001"
+        )) ?? ""
+        let cleanJSON = extracted
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = (cleanJSON.data(using: .utf8)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) }
+            as? [String: Any]) ?? [:]
+
+        // 2. Resolve the target day. Prefer Claude's dateISO; fall back to intent.timeRange.
+        let dayDf = DateFormatter()
+        dayDf.dateFormat = "yyyy-MM-dd"
+        dayDf.timeZone = tz
+        dayDf.locale = Locale(identifier: "en_US_POSIX")
+        let fallbackDay: Date = {
+            switch intent.timeRange {
+            case .tomorrow:
+                return cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
+            case .yesterday:
+                return cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: now))!
+            case .custom(let from, _):
+                return cal.startOfDay(for: from)
+            default:
+                return cal.startOfDay(for: now)
+            }
+        }()
+        let dayStart: Date = {
+            if let s = parsed["dateISO"] as? String, let d = dayDf.date(from: s) {
+                return cal.startOfDay(for: d)
+            }
+            return fallbackDay
+        }()
+        let dayEnd = cal.date(byAdding: .day, value: 1, to: dayStart)!
+
+        // 3. Duration + working window.
+        let rawDuration = (parsed["durationMinutes"] as? Int)
+            ?? Int((parsed["durationMinutes"] as? Double) ?? 30)
+        let duration = max(15, min(480, rawDuration))
+
+        func parseHM(_ s: String?, fallback: (h: Int, m: Int)) -> (h: Int, m: Int) {
+            guard let s = s else { return fallback }
+            let parts = s.split(separator: ":")
+            guard parts.count == 2,
+                  let h = Int(parts[0]), let m = Int(parts[1]),
+                  (0..<24).contains(h), (0..<60).contains(m) else { return fallback }
+            return (h, m)
+        }
+        let early = parseHM(parsed["earliestTime"] as? String, fallback: (9, 0))
+        let late  = parseHM(parsed["latestTime"]   as? String, fallback: (18, 0))
+
+        guard let windowStart = cal.date(bySettingHour: early.h, minute: early.m, second: 0, of: dayStart),
+              let windowEnd   = cal.date(bySettingHour: late.h,  minute: late.m,  second: 0, of: dayStart),
+              windowEnd > windowStart
+        else {
+            throw ConnectorError.parseError("Invalid time window for free-slot search.")
+        }
+
+        // If the target day is today, don't propose slots in the past — round `now` up to next 15 min.
+        var effectiveStart = windowStart
+        if cal.isDate(dayStart, inSameDayAs: now) {
+            let minute = cal.component(.minute, from: now)
+            let hour = cal.component(.hour, from: now)
+            let bumpedMinute = ((minute / 15) + 1) * 15
+            let rounded: Date = {
+                if bumpedMinute >= 60 {
+                    let h = hour + 1
+                    return cal.date(bySettingHour: h, minute: 0, second: 0, of: now) ?? now
+                } else {
+                    return cal.date(bySettingHour: hour, minute: bumpedMinute, second: 0, of: now) ?? now
+                }
+            }()
+            effectiveStart = max(windowStart, rounded)
+        }
+
+        let timeOnly = DateFormatter()
+        timeOnly.dateFormat = "HH:mm"
+        let dayLabel = DateFormatter()
+        dayLabel.dateStyle = .full
+        dayLabel.locale = Locale(identifier: isGerman ? "de_DE" : "en_US")
+
+        if effectiveStart >= windowEnd {
+            var md = "## 📅 \(isGerman ? "Freie Slots" : "Free slots") — \(dayLabel.string(from: dayStart))\n\n"
+            md += isGerman
+                ? "_Keine freien Fenster mehr in diesem Zeitraum._"
+                : "_No remaining free windows in that range._"
+            return ConnectorResult(
+                connectorId: id, connectorName: name, icon: icon,
+                answer: md, rawData: [:], timeRange: intent.timeRange, cachedAt: Date()
+            )
+        }
+
+        // 4. Fetch events for the target day and build busy intervals.
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime]
+        let timeMin = isoFormatter.string(from: dayStart)
+        let timeMax = isoFormatter.string(from: dayEnd)
+        let url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+            + "?singleEvents=true&orderBy=startTime&maxResults=50"
+            + "&timeMin=\(timeMin.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)"
+            + "&timeMax=\(timeMax.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)"
+
+        let data = try await pipedreamProxy(url: url)
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let items = (json["items"] as? [[String: Any]]) ?? []
+
+        var busy: [(start: Date, end: Date)] = []
+        let allDayDf = DateFormatter()
+        allDayDf.dateFormat = "yyyy-MM-dd"
+        allDayDf.timeZone = tz
+        allDayDf.locale = Locale(identifier: "en_US_POSIX")
+        for raw in items {
+            // Skip declined-by-me events — they don't actually block the calendar.
+            if let attendees = raw["attendees"] as? [[String: Any]] {
+                if attendees.contains(where: {
+                    ($0["self"] as? Bool) == true &&
+                    ($0["responseStatus"] as? String) == "declined"
+                }) { continue }
+            }
+            // Transparent events (marked "free") don't block either.
+            if let transparency = raw["transparency"] as? String,
+               transparency == "transparent" {
+                continue
+            }
+            guard let startObj = raw["start"] as? [String: Any],
+                  let endObj   = raw["end"]   as? [String: Any] else { continue }
+            if let sStr = startObj["dateTime"] as? String,
+               let eStr = endObj["dateTime"] as? String,
+               let s = isoFormatter.date(from: sStr),
+               let e = isoFormatter.date(from: eStr) {
+                busy.append((s, e))
+            } else if let sStr = startObj["date"] as? String,
+                      let eStr = endObj["date"] as? String,
+                      let s = allDayDf.date(from: sStr),
+                      let e = allDayDf.date(from: eStr) {
+                busy.append((s, e))
+            }
+        }
+        busy.sort { $0.start < $1.start }
+
+        // Merge overlapping / adjacent busy intervals.
+        var merged: [(start: Date, end: Date)] = []
+        for b in busy {
+            if var last = merged.last, b.start <= last.end {
+                last.end = max(last.end, b.end)
+                merged[merged.count - 1] = last
+            } else {
+                merged.append(b)
+            }
+        }
+
+        // Compute free gaps within [effectiveStart, windowEnd] of length ≥ duration.
+        var free: [(start: Date, end: Date)] = []
+        var cursor = effectiveStart
+        for b in merged {
+            if b.end <= cursor { continue }
+            if b.start >= windowEnd { break }
+            if b.start > cursor {
+                let gapEnd = min(b.start, windowEnd)
+                if gapEnd.timeIntervalSince(cursor) >= Double(duration * 60) {
+                    free.append((cursor, gapEnd))
+                }
+            }
+            if b.end > cursor { cursor = b.end }
+        }
+        if cursor < windowEnd, windowEnd.timeIntervalSince(cursor) >= Double(duration * 60) {
+            free.append((cursor, windowEnd))
+        }
+
+        // 5. Format.
+        var md = "## 📅 \(isGerman ? "Freie Slots" : "Free slots") — \(dayLabel.string(from: dayStart))\n\n"
+        md += "*\(isGerman ? "Mindestens" : "At least") \(duration) min · "
+        md += "\(timeOnly.string(from: windowStart))–\(timeOnly.string(from: windowEnd))*\n\n"
+
+        if free.isEmpty {
+            md += isGerman
+                ? "_Nichts frei in diesem Fenster. Alles verplant._"
+                : "_No free windows in that range. Fully booked._"
+            return ConnectorResult(
+                connectorId: id, connectorName: name, icon: icon,
+                answer: md, rawData: json, timeRange: intent.timeRange, cachedAt: Date()
+            )
+        }
+
+        for slot in free {
+            let mins = Int(slot.end.timeIntervalSince(slot.start) / 60)
+            let durLabel: String
+            if mins >= 60 {
+                let h = mins / 60
+                let m = mins % 60
+                durLabel = m == 0 ? "\(h)h" : "\(h)h \(m)min"
+            } else {
+                durLabel = "\(mins) min"
+            }
+            md += "• `\(timeOnly.string(from: slot.start))–\(timeOnly.string(from: slot.end))` · \(durLabel)\n"
+        }
+        md += "\n_"
+        md += isGerman
+            ? "Sag z. B. „Erstelle einen Termin \(dayDf.string(from: dayStart)) 14 Uhr\" um einzubuchen."
+            : "Say e.g. \"Create an event on \(dayDf.string(from: dayStart)) at 2pm\" to book."
+        md += "_"
+
+        return ConnectorResult(
+            connectorId: id, connectorName: name, icon: icon,
+            answer: md, rawData: json, timeRange: intent.timeRange, cachedAt: Date()
+        )
+    }
+
     private func looksGerman(_ s: String) -> Bool {
         let q = s.lowercased()
         let markers = ["erstell", "termin", "heute", "morgen", "ich", "einen", "meine", "neuen"]
@@ -197,18 +458,23 @@ final class GoogleCalendarConnector: Connector {
         // if the user explicitly asked for week scope.
         let now = Date()
         let range = intent.timeRange
+        let cal = Calendar.current
         let startDate: Date
         let endDate: Date
         switch range {
         case .today, .yesterday:
             startDate = now
-            endDate = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now))!
+            endDate = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
+        case .tomorrow:
+            // Span tomorrow's full day.
+            startDate = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
+            endDate = cal.date(byAdding: .day, value: 2, to: cal.startOfDay(for: now))!
         case .thisWeek, .lastWeek:
             startDate = now
-            endDate = Calendar.current.date(byAdding: .day, value: 7, to: now)!
+            endDate = cal.date(byAdding: .day, value: 7, to: now)!
         case .thisMonth, .lastMonth:
             startDate = now
-            endDate = Calendar.current.date(byAdding: .month, value: 1, to: now)!
+            endDate = cal.date(byAdding: .month, value: 1, to: now)!
         case .custom(let from, let to):
             startDate = from
             endDate = to
@@ -287,7 +553,6 @@ final class GoogleCalendarConnector: Connector {
         dateShort.dateFormat = "EEE d MMM"    // Mon 21 Apr
         dateShort.locale = Locale.autoupdatingCurrent
 
-        let cal = Calendar.current
         let todayRange = cal.startOfDay(for: now)...cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: now))!
 
         // Is everything in today? Then we only need HH:mm. Otherwise day prefix.
@@ -322,9 +587,15 @@ final class GoogleCalendarConnector: Connector {
 
         // Summarise day at the top.
         let todayLabel: String = {
+            let df = DateFormatter(); df.dateStyle = .full
             if allToday {
-                let df = DateFormatter(); df.dateStyle = .full
                 return df.string(from: now)
+            }
+            if case .tomorrow = range {
+                let tomorrow = Calendar.current.date(
+                    byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: now)
+                )!
+                return "Tomorrow — \(df.string(from: tomorrow))"
             }
             return heading
         }()

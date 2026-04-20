@@ -54,6 +54,31 @@ struct IntentDetector {
     private static func extractTimeRange(from normalized: String) -> TimeRange {
         // Order matters: longer/more specific matches first
 
+        // Day after tomorrow — "übermorgen" (folds to "ubermorgen"), "day after tomorrow"
+        if containsAny(normalized, [
+            "ubermorgen", "day after tomorrow"
+        ]) {
+            let cal = Calendar.current
+            let start = cal.date(byAdding: .day, value: 2, to: cal.startOfDay(for: Date()))!
+            let end   = cal.date(byAdding: .day, value: 3, to: cal.startOfDay(for: Date()))!
+            return .custom(from: start, to: end)
+        }
+
+        // Next week — "nächste woche" (folds to "nachste woche"), "next week"
+        if containsAny(normalized, [
+            "nachste woche", "naechste woche", "kommende woche",
+            "next week", "upcoming week"
+        ]) {
+            let cal = Calendar.current
+            let now = Date()
+            var comps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
+            comps.weekday = cal.firstWeekday
+            let thisWeekStart = cal.date(from: comps) ?? now
+            let nextWeekStart = cal.date(byAdding: .weekOfYear, value: 1, to: thisWeekStart)!
+            let nextWeekEnd   = cal.date(byAdding: .day, value: 7, to: nextWeekStart)!
+            return .custom(from: nextWeekStart, to: nextWeekEnd)
+        }
+
         // Last month — "letzten/letztem/letzter monat", "last month", "vergangenen monat"
         if containsAny(normalized, [
             "letzten monat", "letztem monat", "letzter monat",
@@ -81,6 +106,12 @@ struct IntentDetector {
             "aktuelle woche", "aktueller woche",
             "this week", "current week"
         ]) { return .thisWeek }
+
+        // Tomorrow — "morgen" / "tomorrow" (must come after "übermorgen" check above,
+        // otherwise "übermorgen" would match the "morgen" substring).
+        if containsAny(normalized, ["morgen", "tomorrow"]) {
+            return .tomorrow
+        }
 
         // Yesterday — "gestern", "yesterday"
         if containsAny(normalized, ["gestern", "yesterday"]) { return .yesterday }

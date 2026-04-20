@@ -84,7 +84,7 @@ struct OnboardingView: View {
             }
             .padding(.top, 8)
 
-            Text("10 free uses included. No credit card needed.")
+            Text("\(TRIAL_USES_LIMIT) free uses included. No credit card needed.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .padding(.top, 4)
@@ -205,7 +205,7 @@ struct OnboardingView: View {
                 planCard(
                     emoji: "☁️",
                     title: "Use our cloud (recommended)",
-                    subtitle: "Zero setup. We handle everything. 10 free uses, then from $9.99/mo.",
+                    subtitle: "Zero setup. We handle everything. \(TRIAL_USES_LIMIT) free uses, then from $9.99/mo.",
                     selected: selectedPlan == "cloud",
                     action: { selectedPlan = "cloud" }
                 )
@@ -363,13 +363,13 @@ struct OnboardingView: View {
                             .background(Color.green.opacity(0.15))
                             .clipShape(Capsule())
                     }
-                    SecureField("gsk_... (leave empty for 10 free uses)", text: $settings.groqApiKey)
+                    SecureField("gsk_... (leave empty for \(TRIAL_USES_LIMIT) free uses)", text: $settings.groqApiKey)
                         .textFieldStyle(.roundedBorder)
                     HStack {
                         Link("Get free key →", destination: URL(string: "https://console.groq.com/keys")!)
                             .font(.caption)
                         Spacer()
-                        Text("Or leave empty to try with our keys (10 free uses)")
+                        Text("Or leave empty to try with our keys (\(TRIAL_USES_LIMIT) free uses)")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -415,7 +415,7 @@ struct OnboardingView: View {
                             .background(Color.green.opacity(0.15))
                             .clipShape(Capsule())
                     }
-                    SecureField("sk-ant-... (leave empty for 10 free uses)", text: $settings.anthropicApiKey)
+                    SecureField("sk-ant-... (leave empty for \(TRIAL_USES_LIMIT) free uses)", text: $settings.anthropicApiKey)
                         .textFieldStyle(.roundedBorder)
                     HStack {
                         Link("Get key →", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
@@ -762,7 +762,7 @@ struct OnboardingView: View {
 
             HStack(spacing: 4) {
                 Image(systemName: "gift").font(.caption)
-                Text("10 free uses included — no API keys needed.")
+                Text("\(TRIAL_USES_LIMIT) free uses included — no API keys needed.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

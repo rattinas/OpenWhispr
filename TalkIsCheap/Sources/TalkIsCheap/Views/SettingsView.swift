@@ -112,7 +112,7 @@ struct SettingsView: View {
         Form {
             Section {
                 Picker("Mode", selection: serviceMode) {
-                    Text("☁️ Use our cloud — 10 free tries, then subscription").tag("cloud")
+                    Text("☁️ Use our cloud — \(TRIAL_USES_LIMIT) free tries, then subscription").tag("cloud")
                     Text("🔑 My own API keys — free, unlimited").tag("byok")
                     Text("💻 Offline — Apple's engine + Ollama polish, no cloud").tag("offline")
                 }
@@ -120,7 +120,7 @@ struct SettingsView: View {
                 .labelsHidden()
 
                 if settings.useCloudProxy && settings.tier == "trial" {
-                    Label("\(settings.trialUsesRemaining) of 10 free uses left",
+                    Label("\(settings.trialUsesRemaining) of \(TRIAL_USES_LIMIT) free uses left",
                           systemImage: "gift")
                         .foregroundStyle(.blue)
                         .font(.caption)
@@ -409,8 +409,11 @@ struct SettingsView: View {
                 }
 
                 if settings.tier == "trial" {
-                    ProgressView(value: Double(10 - settings.trialUsesRemaining), total: 10)
-                        .tint(.orange)
+                    ProgressView(
+                        value: Double(max(0, TRIAL_USES_LIMIT - settings.trialUsesRemaining)),
+                        total: Double(TRIAL_USES_LIMIT)
+                    )
+                    .tint(.orange)
                     Text("\(settings.trialUsesRemaining) free uses remaining")
                         .font(.caption).foregroundStyle(.secondary)
 
