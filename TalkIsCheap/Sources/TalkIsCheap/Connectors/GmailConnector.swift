@@ -382,7 +382,7 @@ final class GmailConnector: Connector {
         return nil
     }
 
-    private func cleanFrom(_ raw: String) -> String {
+    nonisolated private func cleanFrom(_ raw: String) -> String {
         // "Name <email@example.com>" → "Name" (fallback to email).
         if let open = raw.firstIndex(of: "<") {
             let name = raw[..<open].trimmingCharacters(in: .whitespaces)
@@ -392,7 +392,7 @@ final class GmailConnector: Connector {
     }
 
     /// Walk the MIME parts tree and extract the first text/plain body.
-    private func extractPlainBody(payload: [String: Any]) -> String {
+    nonisolated private func extractPlainBody(payload: [String: Any]) -> String {
         if let mime = payload["mimeType"] as? String, mime == "text/plain",
            let bodyObj = payload["body"] as? [String: Any],
            let b64 = bodyObj["data"] as? String,
@@ -408,7 +408,7 @@ final class GmailConnector: Connector {
         return ""
     }
 
-    private func decodeBase64URL(_ s: String) -> String? {
+    nonisolated private func decodeBase64URL(_ s: String) -> String? {
         var str = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         while str.count % 4 != 0 { str.append("=") }
         guard let data = Data(base64Encoded: str) else { return nil }

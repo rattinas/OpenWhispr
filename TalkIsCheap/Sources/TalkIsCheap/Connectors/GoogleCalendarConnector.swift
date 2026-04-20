@@ -39,7 +39,154 @@ final class GoogleCalendarConnector: Connector {
 
     func query(intent: ConnectorIntent) async throws -> ConnectorResult {
         guard isConnected else { throw ConnectorError.notConnected(name) }
+
+        let q = intent.rawQuery.lowercased()
+        let createMarkers = [
+            "erstelle", "erstell ", "ersteller",
+            "neuer termin", "neue termin", "neuen termin", "neuer meeting", "neues meeting",
+            "termin anlegen", "meeting anlegen", "schedule",
+            "create an event", "create event", "create a meeting", "create meeting",
+            "add event", "add a meeting", "new event", "new meeting",
+            "book ", "plan einen", "trage ein"
+        ]
+        if createMarkers.contains(where: { q.contains($0) }) {
+            return try await createEvent(intent: intent)
+        }
+
         return try await upcomingEvents(intent: intent)
+    }
+
+    // MARK: - Create event
+
+    private func createEvent(intent: ConnectorIntent) async throws -> ConnectorResult {
+        // Ask Claude Haiku to extract structured event details from the
+        // free-form voice query. This covers natural-language date / time
+        // parsing ("heute 13 Uhr", "morgen 10 Uhr", "am Montag um 9") that
+        // would be painful to regex.
+        let nowISO = ISO8601DateFormatter().string(from: Date())
+        let tz = TimeZone.current.identifier
+        let extractionSystem = """
+        You extract Google Calendar event details from a natural-language \
+        command. Return ONLY strict JSON in this schema:
+        {
+          "summary": string,
+          "startISO": string (ISO 8601 with timezone, e.g. 2026-04-20T13:00:00+02:00),
+          "endISO": string (ISO 8601, default startISO + 60 min if not specified),
+          "description": string?,
+          "location": string?,
+          "attendeesEmails": string[] | null
+        }
+        Current moment (ISO): \(nowISO). User's timezone: \(tz). If the user \
+        says "heute" assume today's date. "Morgen" = tomorrow. "13 Uhr" = \
+        13:00 local. "Test" without other meaning is a valid summary.
+        """
+
+        let extracted = try await ProxyClient.polish(
+            text: intent.rawQuery,
+            systemPrompt: extractionSystem,
+            model: "claude-haiku-4-5-20251001"
+        )
+
+        // Claude might wrap the JSON in markdown code fences — strip them.
+        let cleanJSON = extracted
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let data = cleanJSON.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return ConnectorResult(
+                connectorId: id, connectorName: name, icon: icon,
+                answer: "⚠️ Ich konnte die Termin-Details nicht parsen. Versuch's nochmal mit: \"Erstelle einen Termin morgen 14 Uhr, Titel: Projekt Review\".\n\nRaw: \(cleanJSON.prefix(400))",
+                rawData: ["extracted": cleanJSON],
+                timeRange: intent.timeRange, cachedAt: Date()
+            )
+        }
+
+        guard let summary = parsed["summary"] as? String, !summary.isEmpty,
+              let startISO = parsed["startISO"] as? String,
+              let endISO = parsed["endISO"] as? String
+        else {
+            throw ConnectorError.parseError("Missing summary/startISO/endISO in \(cleanJSON.prefix(200))")
+        }
+
+        var body: [String: Any] = [
+            "summary": summary,
+            "start": ["dateTime": startISO, "timeZone": tz],
+            "end":   ["dateTime": endISO,   "timeZone": tz],
+        ]
+        if let desc = parsed["description"] as? String, !desc.isEmpty {
+            body["description"] = desc
+        }
+        if let loc = parsed["location"] as? String, !loc.isEmpty {
+            body["location"] = loc
+        }
+        if let emails = parsed["attendeesEmails"] as? [String], !emails.isEmpty {
+            body["attendees"] = emails.map { ["email": $0] }
+        }
+
+        let data2 = try await pipedreamProxy(
+            url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+            method: "POST",
+            body: body
+        )
+
+        guard let eventJson = try? JSONSerialization.jsonObject(with: data2) as? [String: Any]
+        else {
+            throw ConnectorError.parseError("Create event response unparseable")
+        }
+
+        if let err = eventJson["error"] as? [String: Any] {
+            let msg = (err["message"] as? String) ?? "Unknown error"
+            throw ConnectorError.apiError("Google Calendar: \(msg)")
+        }
+
+        // Nice confirmation in the user's implied language — pick German
+        // if the query sounded German, else English.
+        let isGerman = looksGerman(intent.rawQuery)
+        let eventId = eventJson["id"] as? String ?? ""
+        let htmlLink = eventJson["htmlLink"] as? String ?? ""
+
+        let display = ISO8601DateFormatter()
+        display.formatOptions = [.withInternetDateTime]
+        let start = display.date(from: startISO)
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: isGerman ? "de_DE" : "en_US")
+        fmt.dateStyle = .medium
+        fmt.timeStyle = .short
+        let prettyStart = start.map(fmt.string(from:)) ?? startISO
+
+        var md = "## ✅ \(isGerman ? "Termin erstellt" : "Event created")\n\n"
+        md += "**\(summary)**\n"
+        md += "🕐 \(prettyStart)\n"
+        if let loc = parsed["location"] as? String, !loc.isEmpty { md += "📍 \(loc)\n" }
+        if let desc = parsed["description"] as? String, !desc.isEmpty {
+            md += "\n\(desc)\n"
+        }
+        if !htmlLink.isEmpty {
+            md += "\n[\(isGerman ? "Im Kalender öffnen" : "Open in Calendar")](\(htmlLink))"
+        }
+
+        return ConnectorResult(
+            connectorId: id, connectorName: name, icon: icon,
+            answer: md,
+            rawData: [
+                "eventId": eventId,
+                "htmlLink": htmlLink,
+                "summary": summary,
+                "startISO": startISO,
+                "endISO": endISO,
+            ],
+            timeRange: intent.timeRange,
+            cachedAt: Date()
+        )
+    }
+
+    private func looksGerman(_ s: String) -> Bool {
+        let q = s.lowercased()
+        let markers = ["erstell", "termin", "heute", "morgen", "ich", "einen", "meine", "neuen"]
+        return markers.contains { q.contains($0) }
     }
 
     private func upcomingEvents(intent: ConnectorIntent) async throws -> ConnectorResult {
