@@ -47,13 +47,169 @@ final class GmailConnector: Connector {
     func query(intent: ConnectorIntent) async throws -> ConnectorResult {
         guard isConnected else { throw ConnectorError.notConnected(name) }
 
+        let q = intent.rawQuery.lowercased()
+
+        // Triage path: open-ended questions about what needs attention.
+        // Picks up "urgent", "dringend", "antworten", "reply", "priority",
+        // "important", "muss ich", "wichtig" — runs Claude over a rich
+        // inbox snapshot (labels, snippets, read state, thread position)
+        // so it can answer questions like "welche mails muss ich dringend
+        // beantworten" with actual reasoning.
+        let triageMarkers = [
+            "dringend", "wichtig", "priority", "urgent", "important",
+            "muss ich beantworten", "muss antworten", "need to reply",
+            "needs answer", "needs an answer", "pending", "offene",
+            "unbeantwortet", "follow up", "follow-up", "action needed",
+            "welche mails", "welche e-mails", "which emails", "which mails",
+            "what should i", "was soll ich"
+        ]
+        if triageMarkers.contains(where: { q.contains($0) }) {
+            return try await smartTriage(intent: intent)
+        }
+
         // Heuristic: if the query mentions a sender name/email, search for that.
         let sender = extractSender(from: intent.rawQuery)
-
         if let sender {
             return try await lastMessageFromSender(sender, intent: intent)
         }
         return try await recentInboxSummary(intent: intent)
+    }
+
+    // MARK: - Smart triage (Claude Haiku over a rich inbox snapshot)
+
+    private func smartTriage(intent: ConnectorIntent) async throws -> ConnectorResult {
+        // Fetch user's labels first so we can flag "needs answer"-style
+        // ones that the user has defined themselves.
+        let labelData = try await apiGet(path: "/gmail/v1/users/me/labels")
+        let labelsJson = try? JSONSerialization.jsonObject(with: labelData) as? [String: Any]
+        let rawLabels = (labelsJson?["labels"] as? [[String: Any]]) ?? []
+        struct GmailLabel { let id: String; let name: String }
+        let labels: [GmailLabel] = rawLabels.compactMap { raw in
+            guard let id = raw["id"] as? String, let name = raw["name"] as? String else { return nil }
+            return GmailLabel(id: id, name: name)
+        }
+        // Build quick id → name map + detect actionable labels.
+        let labelNameById = Dictionary(uniqueKeysWithValues: labels.map { ($0.id, $0.name) })
+        let actionableHints = ["answer", "reply", "urgent", "action", "todo", "to-do", "to do", "follow", "wait", "antwort", "wichtig", "dringend"]
+        let actionableLabelIds: [String] = labels.compactMap { l in
+            let n = l.name.lowercased()
+            return actionableHints.contains(where: { n.contains($0) }) ? l.id : nil
+        }
+
+        // Pull a healthy-sized chunk of recent messages: union of
+        // unread, starred, important, and anything with an actionable
+        // user label. Gmail's search operators do the heavy lifting.
+        var qParts: [String] = ["is:unread", "is:starred", "is:important"]
+        for lid in actionableLabelIds { qParts.append("label:\"\(labelNameById[lid] ?? "")\"") }
+        let gmailQuery = qParts.map { "(\($0))" }.joined(separator: " OR ")
+        let encodedQ = gmailQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? gmailQuery
+        let listData = try await apiGet(path: "/gmail/v1/users/me/messages?maxResults=25&q=\(encodedQ)")
+
+        guard let listJson = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
+              let messageStubs = listJson["messages"] as? [[String: Any]], !messageStubs.isEmpty
+        else {
+            return simpleResult("📭 **Inbox is clear** — no unread, starred, important or action-labelled messages.", intent: intent, raw: [:])
+        }
+
+        // Fetch metadata for each message in parallel.
+        struct InboxMsg {
+            let id: String
+            let from: String
+            let subject: String
+            let snippet: String
+            let date: String
+            let labelNames: [String]
+            let isUnread: Bool
+        }
+        let ids = messageStubs.prefix(20).compactMap { $0["id"] as? String }
+        var messages: [InboxMsg] = []
+        try await withThrowingTaskGroup(of: InboxMsg?.self) { group in
+            for id in ids {
+                group.addTask { [self] in
+                    let path = "/gmail/v1/users/me/messages/\(id)?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date"
+                    guard let raw = try? await self.apiGet(path: path),
+                          let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any]
+                    else { return nil }
+                    let headers = ((obj["payload"] as? [String: Any])?["headers"] as? [[String: Any]]) ?? []
+                    func header(_ name: String) -> String {
+                        headers.first { ($0["name"] as? String)?.lowercased() == name.lowercased() }?["value"] as? String ?? ""
+                    }
+                    let labelIds = (obj["labelIds"] as? [String]) ?? []
+                    let names = labelIds.compactMap { labelNameById[$0] }
+                    return InboxMsg(
+                        id: id,
+                        from: header("From"),
+                        subject: header("Subject").isEmpty ? "(no subject)" : header("Subject"),
+                        snippet: (obj["snippet"] as? String) ?? "",
+                        date: header("Date"),
+                        labelNames: names,
+                        isUnread: labelIds.contains("UNREAD")
+                    )
+                }
+            }
+            for try await msg in group {
+                if let msg { messages.append(msg) }
+            }
+        }
+
+        // Build Claude context + ask for a triage.
+        var ctx = "Here's a snapshot of the user's inbox. Analyse it and answer their question.\n\n"
+        ctx += "## Message list (recent unread + starred + important + action-labelled)\n\n"
+        for (i, m) in messages.enumerated() {
+            ctx += "### [\(i + 1)] \(m.subject)\n"
+            ctx += "- **From:** \(cleanFrom(m.from))\n"
+            ctx += "- **Date:** \(m.date)\n"
+            if !m.labelNames.isEmpty {
+                ctx += "- **Labels:** \(m.labelNames.joined(separator: ", "))\n"
+            }
+            ctx += "- **Unread:** \(m.isUnread ? "yes" : "no")\n"
+            if !m.snippet.isEmpty {
+                let trimmed = m.snippet.count > 300 ? String(m.snippet.prefix(300)) + "…" : m.snippet
+                ctx += "- **Snippet:** \(trimmed)\n"
+            }
+            ctx += "\n"
+        }
+
+        let systemPrompt = """
+        You are a voice-first email triage assistant. The user will ask a \
+        natural-language question about their inbox (e.g. "welche mails muss \
+        ich beantworten?", "was ist wichtig?"). Analyse the provided inbox \
+        snapshot and respond in the user's language.
+
+        RULES:
+        - Lead with the 3–5 most urgent items, highest priority first.
+        - For each, write: a one-line reason (why it matters), who sent it, \
+          and what action is expected. Be SHORT. No padding.
+        - User labels like "needs answer", "todo", "dringend", "waiting" are \
+          strong urgency signals — respect them.
+        - Starred / Important flags mean "user marked this", so also strong.
+        - Unread + labelled is more urgent than read + labelled.
+        - If nothing truly urgent, say so clearly in one sentence.
+        - Output valid Markdown. Use bullet points. Bold senders and subjects.
+        - Never invent content. Quote snippets when they help.
+        """
+
+        let userContent = """
+        **Question:** \(intent.rawQuery)
+
+        \(ctx)
+        """
+
+        let answer = try await ProxyClient.polish(
+            text: userContent,
+            systemPrompt: systemPrompt,
+            model: "claude-haiku-4-5-20251001"
+        )
+
+        return ConnectorResult(
+            connectorId: id,
+            connectorName: name,
+            icon: icon,
+            answer: answer,
+            rawData: ["messages": messages.count, "labels": labels.count],
+            timeRange: intent.timeRange,
+            cachedAt: Date()
+        )
     }
 
     /// Unified HTTP GET — picks Pipedream if live, falls back to Nango
